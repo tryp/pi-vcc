@@ -3,7 +3,7 @@ import type { FileOps } from "../types";
 import { normalize } from "./normalize";
 import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
-import { formatSummary, capBrief, RECALL_NOTE } from "./format";
+import { formatSummary, capBrief, RECALL_NOTE, wrapLongLines } from "./format";
 
 export interface CompileInput {
   messages: Message[];
@@ -145,7 +145,7 @@ export const compile = (input: CompileInput): string => {
     : undefined;
   const merged = prev ? mergePrevious(prev, fresh) : fresh;
   if (!merged) return "";
-  return merged + SEPARATOR + RECALL_NOTE;
+  return wrapLongLines(merged) + SEPARATOR + RECALL_NOTE;
 };
 
 const stripRecallNote = (text: string): string => {

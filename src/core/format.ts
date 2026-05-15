@@ -7,6 +7,33 @@ const section = (title: string, items: string[]): string => {
 };
 
 const BRIEF_MAX_LINES = 120;
+const TUI_SAFE_LINE_CHARS = 120;
+
+const wrapLine = (line: string, maxChars: number): string[] => {
+  if (line.length <= maxChars) return [line];
+
+  const indent = line.match(/^\s*(?:[-*]\s+|\d+\.\s+)?/)?.[0] ?? "";
+  const continuationIndent = indent ? " ".repeat(Math.min(indent.length, 8)) : "";
+  const wrapped: string[] = [];
+  let remaining = line;
+  let prefix = "";
+
+  while (prefix.length + remaining.length > maxChars) {
+    const available = Math.max(20, maxChars - prefix.length);
+    let splitAt = remaining.lastIndexOf(" ", available);
+    if (splitAt < Math.floor(available * 0.5)) splitAt = available;
+
+    wrapped.push(prefix + remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+    prefix = continuationIndent;
+  }
+
+  if (remaining) wrapped.push(prefix + remaining);
+  return wrapped;
+};
+
+export const wrapLongLines = (text: string, maxChars = TUI_SAFE_LINE_CHARS): string =>
+  text.split("\n").flatMap((line) => wrapLine(line, maxChars)).join("\n");
 
 export const capBrief = (text: string): string => {
   const lines = text.split("\n");
@@ -45,5 +72,5 @@ export const formatSummary = (data: SectionData): string => {
   // NOTE: RECALL_NOTE is intentionally NOT appended here.
   // It is appended once by `compile()` at the very end, after merge-with-previous,
   // to avoid the note compounding inside the brief transcript across compactions.
-  return parts.join("\n\n---\n\n");
+  return wrapLongLines(parts.join("\n\n---\n\n"));
 };

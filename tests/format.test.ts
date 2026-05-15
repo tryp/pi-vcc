@@ -59,4 +59,13 @@ describe("formatSummary", () => {
     expect(r).toContain("[Outstanding Context]");
     expect(r).toContain("\n\n");
   });
+
+  it("wraps long lines so compaction TUI rendering stays bounded", () => {
+    const data = {
+      ...empty,
+      briefTranscript: `[assistant]\n${"word ".repeat(80)}`,
+    };
+    const r = formatSummary(data);
+    expect(Math.max(...r.split("\n").map((line) => line.length))).toBeLessThanOrEqual(120);
+  });
 });
