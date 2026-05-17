@@ -192,7 +192,7 @@ const probesOf = (messages: Message[], summary: string): RecallProbe[] => {
         sourceText,
         query,
         summaryMentioned: matchesQuery(summary, query),
-        recallHits: searchEntries(rendered, query).length,
+        recallHits: searchEntries(rendered, messages, query).length,
       };
     })
     .filter((probe): probe is RecallProbe => probe !== null);

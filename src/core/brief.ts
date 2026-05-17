@@ -156,6 +156,15 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         lastHeader = "[user]";
         break;
       }
+      case "bash": {
+        const cmd = compressBash(b.command);
+        const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
+        if (cmd) {
+          push("[user]", `$ ${cmd}${ref}`);
+        }
+        lastHeader = "[user]";
+        break;
+      }
       case "assistant": {
         let raw = b.text;
         // Strip leading self-talk prefix (up to 2x; assistants sometimes chain "Hmm, actually, ...")
