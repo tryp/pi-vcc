@@ -41,4 +41,18 @@ describe("buildCompactReport", () => {
     const goalProbe = report.recall.probes.find((p) => p.label === "goal");
     expect(goalProbe?.summaryMentioned).toBe(true);
   });
+
+  it("counts recall hits with the probe query", () => {
+    const report = buildCompactReport({
+      messages: [
+        userMsg("Handle unrelated setup"),
+        assistantWithToolCall("Read", { path: "unique-auth-file.ts" }),
+        toolResult("Read", "code content"),
+        assistantText("Done"),
+      ],
+    });
+    const fileProbe = report.recall.probes.find((p) => p.label === "file");
+    expect(fileProbe?.query).toBe("unique-auth-file.ts");
+    expect(fileProbe?.recallHits).toBe(1);
+  });
 });

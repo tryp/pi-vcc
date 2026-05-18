@@ -19,6 +19,15 @@ describe("compileBrief", () => {
     expect(r).toContain("Let me look at the auth module.");
   });
 
+  it("renders bash commands as user actions", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "bash", command: "npm test", output: "FAIL noisy output", exitCode: 1, sourceIndex: 2 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain("[user]\n$ npm test (#2)");
+    expect(r).not.toContain("FAIL noisy output");
+  });
+
   it("strips filler prefixes but preserves meaningful lead-ins", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: "Okay, I found the root cause." },
