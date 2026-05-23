@@ -31,11 +31,10 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
     return { index, role: "user", summary: full ? textOf(msg.content) : clip(textOf(msg.content), 300) };
   }
   if (msg.role === "toolResult") {
-    const prefix = msg.isError ? "ERROR " : "";
     const text = full ? textOf(msg.content) : clip(textOf(msg.content), 200);
     return {
       index, role: "tool_result",
-      summary: `${prefix}[${msg.toolName}] ${text}`,
+      summary: `[${msg.toolName}] ${text}`,
     };
   }
   // bashExecution has command+output instead of content

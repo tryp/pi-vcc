@@ -1,5 +1,5 @@
 import type { NormalizedBlock } from "../types";
-import { clip, firstLine } from "./content";
+import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
 
@@ -111,21 +111,10 @@ const toolOneLiner = (name: string, args: Record<string, unknown>): string => {
 };
 
 export interface BriefLine {
-  /** Section header like "[user]", "[assistant]", "[tool_error] bash" */
+  /** Section header like "[user]" or "[assistant]" */
   header: string;
   /** Content lines for this section */
   lines: string[];
-}
-
-/** Structured transcript entry for JSON output */
-export interface TranscriptEntry {
-  role: "user" | "assistant" | "tool_error";
-  text?: string;
-  tool?: string;
-  cmd?: string;
-  ref?: string;
-  /** Collapse count when identical tool calls are grouped */
-  count?: number;
 }
 
 /**
@@ -188,19 +177,8 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         push("[assistant]", summary);
         break;
       }
-      case "tool_result": {
-        if (b.isError) {
-          const body = firstLine(b.text, 150);
-          // Drop empty/placeholder error bodies — keep the line only if it carries info.
-          if (!body || body === "(no output)") break;
-          const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
-          const header = `[tool_error] ${b.name}${ref}`;
-          push(header, body);
-          lastHeader = header;
-        }
-        break;
-      }
-      case "thinking":
+      case "tool_result":
+        // Tool result bodies are intentionally omitted from compact briefs.
         break;
     }
   }
@@ -252,34 +230,6 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
     sec.lines = next;
   }
 
-  // Collapse consecutive identical [tool_error] sections (same tool, same body).
-  // E.g. 20 back-to-back `[tool_error] bash (#N) ... Command aborted` become one
-  // `[tool_error] bash (#refs...) x20` entry.
-  const collapsedErrors: BriefLine[] = [];
-  for (const sec of sections) {
-    const m = sec.header.match(/^\[tool_error\]\s+(\S+?)(?:\s*\(#(\d+)\))?$/);
-    if (!m || sec.lines.length !== 1) {
-      collapsedErrors.push(sec);
-      continue;
-    }
-    const tool = m[1];
-    const ref = m[2];
-    const body = sec.lines[0];
-    const prev = collapsedErrors[collapsedErrors.length - 1];
-    const prevMatch = prev?.header.match(
-      /^\[tool_error\]\s+(\S+?)\s*\(((?:#\d+(?:,\s*)?)+)\)(?:\s*x(\d+))?$/,
-    );
-    if (prev && prevMatch && prevMatch[1] === tool && prev.lines.length === 1 && prev.lines[0] === body) {
-      const refs = prevMatch[2] + (ref ? `, #${ref}` : "");
-      const count = prevMatch[3] ? parseInt(prevMatch[3]) + 1 : 2;
-      prev.header = `[tool_error] ${tool} (${refs}) x${count}`;
-    } else {
-      collapsedErrors.push(sec);
-    }
-  }
-  sections.length = 0;
-  sections.push(...collapsedErrors);
-
   return sections;
 };
 
@@ -309,80 +259,6 @@ export const stringifyBrief = (sections: BriefLine[]): string => {
   }
 
   return out.join("\n");
-};
-
-/** Parse a text line into a structured TranscriptEntry */
-const parseToolLine = (line: string): { tool: string; cmd?: string; ref?: string; count?: number } | null => {
-  // * bash "cmd" (#5)
-  // * bash "cmd" (#1, #3) x2
-  // * tilth "query" (#7)
-  const m = line.match(/^\* (\S+)\s*(?:"([^"]*)")?\s*(?:\((#[\d, #]+)\))?\s*(?:x(\d+))?$/);
-  if (!m) return null;
-  return {
-    tool: m[1],
-    cmd: m[2] || undefined,
-    ref: m[3] || undefined,
-    count: m[4] ? parseInt(m[4]) : undefined,
-  };
-};
-
-const extractRef = (text: string): { clean: string; ref?: string } => {
-  const m = text.match(/\s*\(#(\d+)\)$/);
-  if (!m) return { clean: text };
-  return { clean: text.slice(0, m.index).trimEnd(), ref: `#${m[1]}` };
-};
-
-/**
- * Convert BriefLine sections to structured TranscriptEntry array for JSON output.
- */
-export const sectionsToTranscript = (sections: BriefLine[]): TranscriptEntry[] => {
-  const entries: TranscriptEntry[] = [];
-
-  for (const sec of sections) {
-    if (sec.header === "[user]") {
-      for (const line of sec.lines) {
-        const { clean, ref } = extractRef(line);
-        entries.push({ role: "user", text: clean, ...(ref && { ref }) });
-      }
-    } else if (sec.header === "[assistant]") {
-      for (const line of sec.lines) {
-        if (line.startsWith("* ")) {
-          const parsed = parseToolLine(line);
-          if (parsed) {
-            entries.push({
-              role: "assistant",
-              tool: parsed.tool,
-              ...(parsed.cmd && { cmd: parsed.cmd }),
-              ...(parsed.ref && { ref: parsed.ref }),
-              ...(parsed.count && { count: parsed.count }),
-            });
-          } else {
-            // Fallback: unparseable tool line
-            const { clean, ref } = extractRef(line.slice(2));
-            entries.push({ role: "assistant", text: clean, ...(ref && { ref }) });
-          }
-        } else {
-          const { clean, ref } = extractRef(line);
-          entries.push({ role: "assistant", text: clean, ...(ref && { ref }) });
-        }
-      }
-    } else if (sec.header.startsWith("[tool_error]")) {
-      // [tool_error] bash (#5)
-      const headerMatch = sec.header.match(/^\[tool_error\]\s+(\S+)\s*(?:\(#(\d+)\))?/);
-      const tool = headerMatch?.[1] ?? "unknown";
-      const ref = headerMatch?.[2] ? `#${headerMatch[2]}` : undefined;
-      for (const line of sec.lines) {
-        entries.push({
-          role: "tool_error",
-          tool,
-          text: line,
-          ...(ref && { ref }),
-        });
-      }
-    }
-  }
-
-  return entries;
 };
 
 /** Convenience: build sections from blocks and stringify to text */

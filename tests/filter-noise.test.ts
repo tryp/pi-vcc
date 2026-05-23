@@ -3,18 +3,10 @@ import { filterNoise } from "../src/core/filter-noise";
 import type { NormalizedBlock } from "../src/types";
 
 describe("filterNoise", () => {
-  it("removes thinking blocks", () => {
-    const blocks: NormalizedBlock[] = [
-      { kind: "thinking", text: "hmm", redacted: false },
-      { kind: "assistant", text: "hello" },
-    ];
-    expect(filterNoise(blocks)).toEqual([{ kind: "assistant", text: "hello" }]);
-  });
-
   it("removes noise tool calls and results", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "tool_call", name: "TodoWrite", args: {} },
-      { kind: "tool_result", name: "TodoWrite", text: "ok", isError: false },
+      { kind: "tool_result", name: "TodoWrite", text: "ok" },
       { kind: "tool_call", name: "Read", args: { path: "x.ts" } },
     ];
     const result = filterNoise(blocks);
@@ -54,7 +46,7 @@ describe("filterNoise", () => {
   it("preserves non-noise tool calls", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "tool_call", name: "Edit", args: { path: "a.ts" } },
-      { kind: "tool_result", name: "Edit", text: "ok", isError: false },
+      { kind: "tool_result", name: "Edit", text: "ok" },
     ];
     expect(filterNoise(blocks)).toHaveLength(2);
   });

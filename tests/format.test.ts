@@ -9,7 +9,6 @@ const empty: SectionData = {
   commits: [],
   userPreferences: [],
   briefTranscript: "",
-  transcriptEntries: [],
 };
 
 describe("formatSummary", () => {

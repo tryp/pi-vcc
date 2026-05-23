@@ -14,9 +14,9 @@ describe("buildSections", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "user", text: "Fix the auth bug" },
       { kind: "tool_call", name: "Read", args: { file_path: "auth.ts" } },
-      { kind: "tool_result", name: "Read", text: "const x = 1;", isError: false },
+      { kind: "tool_result", name: "Read", text: "const x = 1;" },
       { kind: "tool_call", name: "Edit", args: { file_path: "auth.ts" } },
-      { kind: "tool_result", name: "Edit", text: "ok", isError: false },
+      { kind: "tool_result", name: "Edit", text: "ok" },
       { kind: "assistant", text: "- run tests next" },
     ];
     const r = buildSections({ blocks });
@@ -26,24 +26,22 @@ describe("buildSections", () => {
     expect(r.briefTranscript).toContain('* Edit "auth.ts"');
   });
 
-  it("captures outstanding context from errors", () => {
+  it("captures outstanding context from user and assistant text", () => {
     const blocks: NormalizedBlock[] = [
-      { kind: "tool_result", name: "bash", text: "FAIL: test broken\ndetails here", isError: true },
+      { kind: "assistant", text: "Tests are still failing after the retry." },
     ];
     const r = buildSections({ blocks });
     expect(r.outstandingContext.length).toBeGreaterThan(0);
-    expect(r.outstandingContext[0]).toContain("FAIL");
+    expect(r.outstandingContext[0]).toContain("Tests are still failing");
   });
 
-  it("brief transcript hides tool results but shows errors", () => {
+  it("brief transcript hides tool results", () => {
     const blocks: NormalizedBlock[] = [
-      { kind: "tool_result", name: "Read", text: "lots of code here ...", isError: false },
-      { kind: "tool_result", name: "bash", text: "Command not found", isError: true },
+      { kind: "tool_result", name: "Read", text: "lots of code here ..." },
+      { kind: "tool_result", name: "bash", text: "Command not found" },
     ];
     const r = buildSections({ blocks });
-    expect(r.briefTranscript).not.toContain("lots of code");
-    expect(r.briefTranscript).toContain("[tool_error] bash");
-    expect(r.briefTranscript).toContain("Command not found");
+    expect(r.briefTranscript).toBe("");
   });
 
   it("brief transcript merges adjacent assistant sections", () => {

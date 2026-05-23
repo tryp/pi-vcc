@@ -26,9 +26,9 @@ describe("renderMessage", () => {
     expect(r.summary).toContain("Read(path=a.ts)");
   });
 
-  it("renders error tool result with prefix", () => {
-    const r = renderMessage(toolResult("bash", "not found", true), 3);
-    expect(r.summary).toStartWith("ERROR");
+  it("renders tool results without error prefix", () => {
+    const r = renderMessage(toolResult("bash", "not found"), 3);
+    expect(r.summary).toBe("[bash] not found");
   });
 
   it("truncates long user text", () => {

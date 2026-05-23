@@ -1,11 +1,11 @@
 import type { NormalizedBlock } from "../types";
-import { clip, clipSentence, firstLine, nonEmptyLines } from "./content";
+import { clip, clipSentence, nonEmptyLines } from "./content";
 import type { SectionData } from "../sections";
 import { extractGoals } from "../extract/goals";
 import { extractFiles } from "../extract/files";
 import { extractPreferences, dedupPreferencesAgainstGoals } from "../extract/preferences";
 import { extractCommits, formatCommits } from "../extract/commits";
-import { buildBriefSections, sectionsToTranscript, stringifyBrief } from "./brief";
+import { buildBriefSections, stringifyBrief } from "./brief";
 
 export interface BuildSectionsInput {
   blocks: NormalizedBlock[];
@@ -19,11 +19,6 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
   const tail = blocks.slice(-20);
 
   for (const b of tail) {
-    if (b.kind === "tool_result" && b.isError) {
-      items.push(`[${b.name}] ${firstLine(b.text, 150)}`);
-      continue;
-    }
-
     if (b.kind === "assistant" || b.kind === "user") {
       for (const line of nonEmptyLines(b.text)) {
         if (!BLOCKER_RE.test(line)) continue;
@@ -74,6 +69,5 @@ export const buildSections = (input: BuildSectionsInput): SectionData => {
     commits: formatCommits(extractCommits(blocks)),
     userPreferences,
     briefTranscript: stringifyBrief(briefSections),
-    transcriptEntries: sectionsToTranscript(briefSections),
   };
 };

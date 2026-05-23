@@ -5,7 +5,6 @@ import { renderMessage, type RenderedEntry } from "./render-entries";
 export interface LoadedMessages {
   rendered: RenderedEntry[];
   rawMessages: Message[];
-  entryIds: string[];
 }
 
 export const loadAllMessages = (
@@ -21,7 +20,6 @@ export const loadAllMessages = (
   }
   const rendered: RenderedEntry[] = [];
   const rawMessages: Message[] = [];
-  const entryIds: string[] = [];
 
   let messageIndex = 0;
   for (const e of entries) {
@@ -32,10 +30,9 @@ export const loadAllMessages = (
     if (allowed) {
       rendered.push(renderMessage(e.message, messageIndex, full));
       rawMessages.push(e.message);
-      entryIds.push(String(e.id));
     }
     messageIndex++;
   }
 
-  return { rendered, rawMessages, entryIds };
+  return { rendered, rawMessages };
 };

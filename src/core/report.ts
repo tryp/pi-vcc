@@ -19,7 +19,6 @@ interface BlockCounts {
   assistant: number;
   toolCalls: number;
   toolResults: number;
-  thinking: number;
 }
 
 export interface RecallProbe {
@@ -80,7 +79,6 @@ const countBlocks = (messages: Message[]): BlockCounts => {
     assistant: 0,
     toolCalls: 0,
     toolResults: 0,
-    thinking: 0,
   };
 
   for (const block of normalize(messages)) {
@@ -88,7 +86,6 @@ const countBlocks = (messages: Message[]): BlockCounts => {
     else if (block.kind === "assistant") counts.assistant += 1;
     else if (block.kind === "tool_call") counts.toolCalls += 1;
     else if (block.kind === "tool_result") counts.toolResults += 1;
-    else if (block.kind === "thinking") counts.thinking += 1;
   }
 
   return counts;

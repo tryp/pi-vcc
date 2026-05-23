@@ -30,7 +30,6 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
       kind: "tool_result",
       name: msg.toolName,
       text: sanitize(textOf(msg.content)),
-      isError: msg.isError,
       sourceIndex: msgIndex,
     }];
   }
@@ -45,13 +44,6 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
     for (const part of msg.content) {
       if (part.type === "text") {
         blocks.push({ kind: "assistant", text: sanitize(part.text), sourceIndex: msgIndex });
-      } else if (part.type === "thinking") {
-        blocks.push({
-          kind: "thinking",
-          text: sanitize(part.thinking),
-          redacted: part.redacted ?? false,
-          sourceIndex: msgIndex,
-        });
       } else if (part.type === "toolCall") {
         blocks.push({
           kind: "tool_call",

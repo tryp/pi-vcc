@@ -28,13 +28,9 @@ describe("normalize", () => {
     expect(normalize([msg])).toEqual([{ kind: "assistant", text: "plain text", sourceIndex: 0 }]);
   });
 
-  it("splits assistant thinking + text", () => {
+  it("skips assistant thinking blocks", () => {
     const blocks = normalize([assistantWithThinking("result", "hmm")]);
-    expect(blocks).toHaveLength(2);
-    expect(blocks[0]).toEqual({
-      kind: "thinking", text: "hmm", redacted: false, sourceIndex: 0,
-    });
-    expect(blocks[1]).toEqual({ kind: "assistant", text: "result", sourceIndex: 0 });
+    expect(blocks).toEqual([{ kind: "assistant", text: "result", sourceIndex: 0 }]);
   });
 
   it("normalizes tool call", () => {
@@ -48,15 +44,8 @@ describe("normalize", () => {
     const blocks = normalize([toolResult("Read", "file contents")]);
     expect(blocks).toEqual([{
       kind: "tool_result", name: "Read",
-      text: "file contents", isError: false, sourceIndex: 0,
+      text: "file contents", sourceIndex: 0,
     }]);
-  });
-
-  it("normalizes error tool result", () => {
-    const blocks = normalize([toolResult("Edit", "not found", true)]);
-    expect(blocks[0]).toMatchObject({
-      kind: "tool_result", isError: true,
-    });
   });
 
   it("handles mixed message sequence", () => {

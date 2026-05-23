@@ -48,13 +48,12 @@ export const assistantWithToolCall = (
 export const toolResult = (
   name: string,
   text: string,
-  isError = false,
 ): Message => ({
   role: "toolResult",
   toolCallId: "tc_1",
   toolName: name,
   content: [{ type: "text", text }],
-  isError,
+  isError: false,
   timestamp: ts,
 });
 
