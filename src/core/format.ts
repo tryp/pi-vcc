@@ -6,7 +6,9 @@ const section = (title: string, items: string[]): string => {
   return `[${title}]\n${body}`;
 };
 
-const BRIEF_MAX_LINES = 120;
+const BRIEF_MIN_LINES = 400;
+const BRIEF_MAX_LINES = 2000;
+const BRIEF_KEEP_FRACTION = 0.65;
 const TUI_SAFE_LINE_CHARS = 120;
 
 const wrapLine = (line: string, maxChars: number): string[] => {
@@ -37,9 +39,12 @@ export const wrapLongLines = (text: string, maxChars = TUI_SAFE_LINE_CHARS): str
 
 export const capBrief = (text: string): string => {
   const lines = text.split("\n");
-  if (lines.length <= BRIEF_MAX_LINES) return text;
-  const omitted = lines.length - BRIEF_MAX_LINES;
-  const kept = lines.slice(-BRIEF_MAX_LINES);
+  // Proportional: keep at least BRIEF_MIN_LINES, but if the brief is very long,
+  // keep a higher proportion (up to BRIEF_KEEP_FRACTION of total, capped at BRIEF_MAX_LINES)
+  const keep = Math.min(Math.max(BRIEF_MIN_LINES, Math.floor(lines.length * BRIEF_KEEP_FRACTION)), BRIEF_MAX_LINES);
+  if (lines.length <= keep) return text;
+  const omitted = lines.length - keep;
+  const kept = lines.slice(-keep);
   // Find first section header to avoid cutting mid-section
   const firstHeader = kept.findIndex((l) => /^\[.+\]/.test(l));
   const clean = firstHeader > 0 ? kept.slice(firstHeader) : kept;

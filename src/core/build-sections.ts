@@ -16,9 +16,23 @@ const BLOCKER_RE =
 
 const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
   const items: string[] = [];
-  const tail = blocks.slice(-20);
+  const tail = blocks.slice(-30);
 
   for (const b of tail) {
+    if (b.kind === "tool_result" && b.isError) {
+      const first = firstLine(b.text, 150);
+      const clipped = `[${b.name}] ${first}`;
+      if (!items.includes(clipped)) items.push(clipped);
+      continue;
+    }
+
+    if (b.kind === "bash" && b.exitCode != null && b.exitCode !== 0) {
+      const first = firstLine(b.output || "(no output)", 150);
+      const clipped = `[bash exit ${b.exitCode}] ${first}`;
+      if (!items.includes(clipped)) items.push(clipped);
+      continue;
+    }
+
     if (b.kind === "assistant" || b.kind === "user") {
       for (const line of nonEmptyLines(b.text)) {
         if (!BLOCKER_RE.test(line)) continue;
@@ -35,7 +49,7 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
     }
   }
 
-  return items.slice(0, 5);
+  return items.slice(0, 8);
 };
 
 const formatFileActivity = (blocks: NormalizedBlock[]): string[] => {

@@ -54,7 +54,7 @@ describe("compileBrief", () => {
     expect(matches?.length).toBe(1);
   });
 
-  it("hides non-error tool results", () => {
+  it("hides non-error tool results without result-like content", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "tool_result", name: "Read", text: "const x = 1;\nconst y = 2;\n// lots of code" },
     ];
@@ -62,12 +62,21 @@ describe("compileBrief", () => {
     expect(r).toBe("");
   });
 
-  it("hides tool results regardless of output text", () => {
+  it("shows error tool results as one-liner", () => {
     const blocks: NormalizedBlock[] = [
-      { kind: "tool_result", name: "bash", text: "FAIL auth.test.ts\nexpected 200 got 401" },
+      { kind: "tool_result", name: "bash", text: "FAIL auth.test.ts\nexpected 200 got 401", isError: true },
     ];
     const r = compileBrief(blocks);
-    expect(r).toBe("");
+    expect(r).toContain("bash failed");
+    expect(r).toContain("FAIL auth.test.ts");
+  });
+
+  it("shows tool results with key result keywords", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_result", name: "bash", text: "RMS error: 15.84 dB\nAll tests passed" },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain("RMS error: 15.84 dB");
   });
 
   it("merges adjacent assistant sections", () => {
@@ -143,8 +152,9 @@ describe("compileBrief", () => {
     // Hidden content
     expect(r).not.toContain("think");
     expect(r).not.toContain("export function login");
+    // Tool errors and result-like outputs are now summarized
+    // "File edited successfully" doesn't match result keywords → hidden
     expect(r).not.toContain("File edited successfully");
-    expect(r).not.toContain("All tests passed");
   });
 
   // ── noise filtering tests (aligned with VCC) ──
