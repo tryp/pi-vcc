@@ -3,11 +3,8 @@ import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
 
-const TRUNCATE_USER = 256;
-const SEGMENT_CLOSING_ASSISTANT_HEAD_WORDS = 120;
-const SEGMENT_CLOSING_ASSISTANT_TAIL_WORDS = 120;
-const ASSISTANT_HEAD_WORDS = 80;
-const ASSISTANT_TAIL_WORDS = 120;
+const TRUNCATE_USER = 512;
+const TRUNCATE_ASSISTANT = 400;
 
 // Strip common self-reflective assistant prefixes that carry no semantic info.
 // Conservative list: only removes the leading filler, preserves the actual content.
@@ -107,7 +104,7 @@ const isSegmentClosingAssistant = (blocks: NormalizedBlock[], index: number): bo
 
 // ── bash command compression ──
 
-const BASH_CAP = 240;
+const BASH_CAP = 200;
 const PIPE_TAIL_RE = /\s*\|\s*(?:head|tail|sort|wc|column|tr|cut|awk|uniq|python3|node|bun)(?:\s[^|]*)?$/;
 // Preamble/boilerplate lines that carry no durable fact on their own. Dropped
 // when a script has more informative lines, so `set -euo pipefail\ngit commit`
@@ -314,9 +311,24 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         push("[assistant]", summary);
         break;
       }
-      case "tool_result":
-        // Tool result bodies are intentionally omitted from compact briefs.
+      case "tool_result": {
+        // Tool result bodies: keep a 1-line summary of errors and key outputs.
+        // Full results remain searchable via vcc_recall.
+        const isError = b.isError || false;
+        const text = (b.text || "").trim();
+        if (isError && text) {
+          // Keep error first line (truncated)
+          const first = text.split("\n")[0] || text;
+          push("[assistant]", `⚠️ ${b.name} failed: ${clip(first, 160)}`);
+        } else if (text && /(?:^|\n)(?:✓|✅|❌|\d+\.\d+|error|fail|success|result|rms|z_in|s11|db)/i.test(text)) {
+          // Keep a one-liner if it has result-like content
+          const summary = text.split("\n").slice(0, 3).filter(Boolean).find(l => 
+            /(?:✓|✅|❌|\d+\.\d+|error|fail|success|result|rms|z_in|s11|db)/i.test(l)
+          ) || text.split("\n")[0];
+          if (summary) push("[assistant]", `→ ${b.name}: ${clip(summary, 160)}`);
+        }
         break;
+      }
     }
   }
 
