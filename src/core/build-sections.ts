@@ -1,5 +1,5 @@
 import type { NormalizedBlock } from "../types";
-import { clip, clipSentence, nonEmptyLines } from "./content";
+import { clip, clipSentence, firstLine, nonEmptyLines } from "./content";
 import type { SectionData } from "../sections";
 import { extractGoals } from "../extract/goals";
 import { extractFiles } from "../extract/files";
