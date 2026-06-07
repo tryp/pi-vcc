@@ -8,6 +8,19 @@ export interface FileOps {
   createdFiles?: string[];
 }
 
+export interface PerFileDetail {
+  path: string;
+  ops: Array<{ tool: string; timestamp: number }>;
+  status?: string;
+}
+
+export interface FileActivity {
+  read: Set<string>;
+  modified: Set<string>;
+  created: Set<string>;
+  details: Map<string, PerFileDetail>;
+}
+
 export type NormalizedBlock =
   | { kind: "user"; text: string; sourceIndex?: number }
   | { kind: "assistant"; text: string; sourceIndex?: number }

@@ -1,5 +1,5 @@
-import type { FileOps, NormalizedBlock } from "../types";
-import { clip, clipSentence, nonEmptyLines } from "./content";
+import type { FileOps, NormalizedBlock, PerFileDetail } from "../types";
+import { clip, clipSentence, nonEmptyLines, firstLine } from "./content";
 import type { SectionData } from "../sections";
 import { extractGoals } from "../extract/goals";
 import { extractFiles } from "../extract/files";
@@ -55,19 +55,68 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
   return items.slice(0, 8);
 };
 
+const FILE_WRITE_COUNT_TOOLS = new Set([
+  "Edit", "Write", "edit", "write", "edit_file", "write_file",
+  "MultiEdit",
+]);
+
+const countWriteOps = (detail: PerFileDetail): number =>
+  detail.ops.filter((o) => FILE_WRITE_COUNT_TOOLS.has(o.tool)).length;
+
+const describeModified = (detail: PerFileDetail): string => {
+  const edits = countWriteOps(detail);
+  if (edits > 0) return `Edited (${edits} edit${edits !== 1 ? "s" : ""})`;
+  return "Written";
+};
+
 const formatFileActivity = (blocks: NormalizedBlock[], fileOps?: FileOps): string[] => {
   const act = extractFiles(blocks, fileOps);
-  // Dedup: if already Modified, drop from Created (file existed before)
-  for (const p of act.modified) act.created.delete(p);
+
+  // If no per-file details were collected (e.g., fileOps-only input), fall back to flat format
+  if (act.details.size === 0) {
+    const lines: string[] = [];
+    const cap = (set: Set<string>, limit: number) => {
+      const arr = [...set];
+      if (arr.length <= limit) return arr.join(", ");
+      return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
+    };
+    if (act.modified.size > 0) lines.push(`Modified: ${cap(act.modified, 10)}`);
+    if (act.created.size > 0) lines.push(`Created: ${cap(act.created, 10)}`);
+    if (act.read.size > 0) lines.push(`Read: ${cap(act.read, 10)}`);
+    return lines;
+  }
   const lines: string[] = [];
-  const cap = (set: Set<string>, limit: number) => {
-    const arr = [...set];
-    if (arr.length <= limit) return arr.join(", ");
-    return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
-  };
-  if (act.modified.size > 0) lines.push(`Modified: ${cap(act.modified, 10)}`);
-  if (act.created.size > 0) lines.push(`Created: ${cap(act.created, 10)}`);
-  if (act.read.size > 0) lines.push(`Read: ${cap(act.read, 10)}`);
+  const MAX_ENTRIES = 15;
+  let count = 0;
+
+  // Modified files with details (status)
+  for (const p of act.modified) {
+    if (count >= MAX_ENTRIES) break;
+    const detail = act.details.get(p);
+    if (!detail) continue;
+    const desc = describeModified(detail);
+    const statusStr = detail.status ? `. Status: ${detail.status}` : "";
+    lines.push(`Modified: ${p} — ${desc}${statusStr}`);
+    count++;
+  }
+
+  // Created files
+  for (const p of act.created) {
+    if (count >= MAX_ENTRIES) break;
+    const detail = act.details.get(p);
+    const statusStr = detail?.status ? `. Status: ${detail.status}` : ". Status: needs fixtures";
+    lines.push(`Created: ${p} — New file${statusStr}`);
+    count++;
+  }
+
+  // Read files (no status)
+  for (const p of act.read) {
+    if (count >= MAX_ENTRIES) break;
+    if (act.modified.has(p)) continue; // skip if already shown as modified
+    lines.push(`Read: ${p} — Read`);
+    count++;
+  }
+
   return lines;
 };
 
