@@ -6,7 +6,7 @@ import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateTokensFromChars } from "../core/token-estimate";
 import type { PiVccCompactionDetails } from "../details";
-import type { CompactionReason } from "../types";
+import type { CompactionReason, FileOps } from "../types";
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 
@@ -130,6 +130,9 @@ const dbg = (settings: PiVccSettings, data: Record<string, unknown>) => {
   try { writeFileSync("/tmp/pi-vcc-debug.json", JSON.stringify(data, null, 2)); } catch {}
 };
 
+/** Maximum messages to keep as tail after compaction */
+const TAIL_MAX_MESSAGES = 30;
+
 const previewContent = (content: unknown): string => {
   if (typeof content === "string") return content.slice(0, 300);
   if (Array.isArray(content)) {
@@ -169,8 +172,88 @@ export type OwnCutResult =
     }
   | { ok: false; reason: OwnCutCancelReason };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResult {
-  const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
+/** Extract content string from message content (string or array of parts) */
+const extractContentString = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: any) => p?.type === "text" || typeof p === "string")
+      .map((p: any) => (typeof p === "string" ? p : p.text || ""))
+      .join("\n")
+      .trim();
+  }
+  return "";
+};
+
+/**
+ * Collect working-set file identifiers from fileOps for content matching.
+ * Returns a Set of full paths, basenames, and name-without-extension for each file.
+ */
+const collectWorkingFiles = (fileOps: FileOps): Set<string> => {
+  const files = new Set<string>();
+  const addFiles = (list?: string[]) => {
+    if (!list) return;
+    for (const f of list) {
+      files.add(f);
+      const basename = f.split("/").pop();
+      if (basename) {
+        files.add(basename);
+        const dotIdx = basename.lastIndexOf(".");
+        if (dotIdx > 0) files.add(basename.slice(0, dotIdx));
+      }
+    }
+  };
+  addFiles(fileOps.readFiles);
+  addFiles(fileOps.modifiedFiles);
+  addFiles(fileOps.createdFiles);
+  return files;
+};
+
+/**
+ * Extend the tail cut point to include assistant/toolResult messages that
+ * reference working-set files. This preserves file-read context in the tail
+ * so the agent doesn't need to re-read files after compaction.
+ */
+const extendTailForWorkingSet = (
+  liveMessages: EntryWithMessage[],
+  currentCutIdx: number,
+  fileOps?: FileOps,
+): number => {
+  if (!fileOps) return currentCutIdx;
+  if (currentCutIdx <= 0) return currentCutIdx; // compact-all case
+
+  const workingFiles = collectWorkingFiles(fileOps);
+  if (workingFiles.size === 0) return currentCutIdx;
+
+  const minAllowedIdx = Math.max(0, liveMessages.length - TAIL_MAX_MESSAGES);
+  let extendedCutIdx = currentCutIdx;
+
+  // Walk backwards from the current cut point to find messages that
+  // mention files in the working set. Include all roles except user
+  // (user messages are conversation boundaries).
+  for (let i = currentCutIdx - 1; i >= minAllowedIdx; i--) {
+    const m = liveMessages[i];
+    // User messages mark conversation turn boundaries — stop here
+    if (m.message.role === "user") break;
+    // Only check assistant and toolResult messages for file references
+    if (m.message.role !== "assistant" && m.message.role !== "toolResult") continue;
+
+    const contentStr = extractContentString(m.message.content);
+    if (!contentStr) continue;
+
+    // Check if any working-set file identifier appears in the content
+    const mentionsFile = [...workingFiles].some((file) => contentStr.includes(file));
+    if (mentionsFile) {
+      extendedCutIdx = i;
+    }
+    // Continue scanning beyond the first match to find earlier file references
+  }
+
+  return extendedCutIdx;
+};
+
+export function buildOwnCut(branchEntries: any[], fileOps?: FileOps): OwnCutResult {
+
   // Find the last compaction entry and its firstKeptEntryId
   let lastCompactionIdx = -1;
   let lastKeptId: string | undefined;
@@ -243,10 +326,14 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
     return compactAll(true);
   }
 
+  // Content-aware tail extension: if fileOps provided, extend the tail to include
+  // assistant/toolResult messages that reference working-set files
+  const extendedCutIdx = extendTailForWorkingSet(liveMessages, cutIdx, fileOps);
+
   return {
     ok: true,
-    messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
-    firstKeptEntryId: liveMessages[cutIdx].entry.id,
+    messages: liveMessages.slice(0, extendedCutIdx).map((e) => e.message),
+    firstKeptEntryId: liveMessages[extendedCutIdx].entry.id,
     compactAll: false,
     keptUserTurns: userIndices.length - targetUserIdx,
     totalUserTurns: userIndices.length,
@@ -361,31 +448,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     pendingFollowUpPrompt = null;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
-    const calibrationCut = buildOwnCut(branchEntries as any[], 0);
-    const calibrationMessageChars = calibrationCut.ok
-      ? calibrationCut.messages.reduce(
-          (sum: number, message: any) => sum + estimateMessageContentChars(message.content),
-          0,
-        )
-      : 0;
-    const calibrationSummaryChars = typeof preparation.previousSummary === "string"
-      ? preparation.previousSummary.length
-      : 0;
-    const tokenEstimate = calibrateCharsPerToken(
-      calibrationMessageChars + calibrationSummaryChars,
-      preparation.tokensBefore,
-    );
-
-    // Smart keep-tail: boost default keep when the tail is small.
-    // Explicit keep:N from the user is always respected (resolver no-ops).
-    const smartKeep = resolveSmartKeepUserTurns({
-      branchEntries: branchEntries as any[],
-      requestedKeepUserTurns: keepUserTurnsExplicit ? keepUserTurns : null,
-      explicit: keepUserTurnsExplicit,
-      smartKeepTail: settings.smartKeepTail,
-      charsPerToken: tokenEstimate.charsPerToken,
-    });
-    const ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
+    const fileOps: FileOps = {
+      readFiles: [...preparation.fileOps.read],
+      modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
+    };
+    const ownCut = buildOwnCut(branchEntries as any[], fileOps);
     if (!ownCut.ok) {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
       const lastCompIdx = lastComp ? (branchEntries as any[]).indexOf(lastComp) : -1;
