@@ -249,6 +249,26 @@ const extendTailForWorkingSet = (
     // Continue scanning beyond the first match to find earlier file references
   }
 
+  // Ensure we never land on a toolResult — its preceding assistant with
+  // tool_calls must also be kept, otherwise the post-compaction message
+  // stream will contain orphaned "tool" role messages without a matching
+  // "tool_calls" assistant, causing API rejections like DeepSeek's
+  // "Messages with role 'tool' must be a response to a preceding message
+  // with 'tool_calls'".
+  if (extendedCutIdx < liveMessages.length && liveMessages[extendedCutIdx].message.role === "toolResult") {
+    // Walk back until we find the first non-toolResult message.
+    // In a well-formed conversation this is the assistant that issued
+    // the tool calls, or possibly a user/conversation boundary.
+    while (extendedCutIdx > 0 && liveMessages[extendedCutIdx].message.role === "toolResult") {
+      extendedCutIdx--;
+    }
+    // If we walked all the way to the beginning without finding a valid
+    // cut point, fall back to the original un-extended position.
+    if (liveMessages[extendedCutIdx].message.role === "toolResult") {
+      extendedCutIdx = currentCutIdx;
+    }
+  }
+
   return extendedCutIdx;
 };
 
