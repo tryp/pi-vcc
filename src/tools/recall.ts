@@ -17,14 +17,10 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
     name: "vcc_recall",
     label: "VCC Recall",
     description:
-      "Recall earlier parts of the current session — decisions made, files touched, commands run, " +
-      "including anything dropped by compaction. Reach for this before telling the user you no longer " +
-      "have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged " +
-      "(page); pass expand with entry indices to read full untruncated content. Only the current session " +
-      "is searchable — earlier sessions are not.",
+      "Search session history (decisions, criteria, status, conversation). Defaults to active lineage; " +
+      "use scope:'all' to include off-lineage branches. Supports regex queries, paging, and expand indices.",
     promptSnippet:
-      "vcc_recall: recall earlier parts of this session before saying the context is gone. " +
-      "Plain keywords work best; scope:'all' widens to other conversation branches.",
+      "vcc_recall: Search session history (decisions, criteria, status, conversation). Default scope is active lineage. Use scope:'all' for off-lineage branches.",
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({ description: "What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works." }),
