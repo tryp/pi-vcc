@@ -1,25 +1,19 @@
-# pi-vcc extension — copy-based deployment
+# pi-vcc extension — source-deployed
+#
+# pi loads pi-vcc directly from ~/src/pi-vcc (TypeScript source via tsgo).
+# Changes to source take effect immediately — no deploy step needed.
+# The deploy target exists as a backup/archive copy to the npm location.
 #
 # Usage:
-#   make deploy      # copy fork files to runtime npm location
-#   make verify      # check deployed files match source
+#   make test        # run interface tests
+#   make smoke-test  # quick-check extension loads in a real pi session
+#   make deploy      # backup copy to npm location (not required)
+#   make verify      # check deploy matches source
 
 RUNTIME = $(HOME)/.pi/agent/npm/node_modules/@sting8k/pi-vcc
 SOURCE = $(HOME)/src/pi-vcc
 
-# Files needed at runtime (extension loads from index.ts via tsgo)
-DEPLOY_DIRS = \
-	src \
-	scripts \
-	tests
-
-DEPLOY_FILES = \
-	index.ts \
-	package.json \
-	README.md \
-	tsconfig.json
-
-.PHONY: deploy verify link-packages test test-all
+.PHONY: deploy verify link-packages test test-all smoke-test
 
 link-packages:
 	@mkdir -p node_modules
@@ -30,10 +24,25 @@ TSX = /home/dev/src/pi-mono/node_modules/.bin/tsx
 test: link-packages  ## Run interface tests
 	$(TSX) --test tests/interface.test.ts
 
-test-all: test  ## Run all tests (add unit tests here)
+test-all: test smoke-test  ## Run all tests
 
-deploy: ## Copy fork files to runtime npm location
-	@echo "Deploying pi-vcc to $(RUNTIME)..."
+smoke-test:  ## Check extension loads in a real pi session
+	@echo "Smoke testing pi-vcc extension in pi..."
+	@rm -f /tmp/pi-vcc-smoke.jsonl
+	@(timeout 120 pi --mode json --no-session -p "list your available tools" > /tmp/pi-vcc-smoke.jsonl 2>&1) &
+	@PID=$$!; \
+	  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+	    if grep -q 'vcc_recall' /tmp/pi-vcc-smoke.jsonl 2>/dev/null; then \
+	      echo "  OK: vcc_recall tool found in pi output"; \
+	      kill $$PID 2>/dev/null; exit 0; \
+	    fi; \
+	    sleep 2; \
+	  done; \
+	  echo "  WARN: pi not responding — check /tmp/pi-vcc-smoke.jsonl"; \
+	  kill $$PID 2>/dev/null; exit 1
+
+deploy: ## Backup copy to npm location (not required — pi loads from source)
+	@echo "Backing up pi-vcc to $(RUNTIME)..."
 	cp "$(SOURCE)/index.ts" "$(RUNTIME)/index.ts"
 	cp "$(SOURCE)/package.json" "$(RUNTIME)/package.json"
 	cp "$(SOURCE)/tsconfig.json" "$(RUNTIME)/tsconfig.json" 2>/dev/null || true
