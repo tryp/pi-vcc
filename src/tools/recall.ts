@@ -17,10 +17,10 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
     name: "vcc_recall",
     label: "VCC Recall",
     description:
-      "Search session history. Defaults to active lineage; use scope:'all' to include off-lineage branches." +
-      " Supports regex queries, paging, and expand indices.",
+      "Search session history (decisions, criteria, status, conversation). Defaults to active lineage; " +
+      "use scope:'all' to include off-lineage branches. Supports regex queries, paging, and expand indices.",
     promptSnippet:
-      "vcc_recall: Search history; default scope is active lineage. Use scope:'all' for off-lineage branches.",
+      "vcc_recall: Search session history (decisions, criteria, status, conversation). Default scope is active lineage. Use scope:'all' for off-lineage branches.",
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({ description: "Search terms or regex pattern (e.g. 'hook|inject', 'fail.*build'). Multi-word = OR ranked by relevance." }),
