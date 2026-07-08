@@ -272,7 +272,14 @@ const extendTailForWorkingSet = (
   return extendedCutIdx;
 };
 
-export function buildOwnCut(branchEntries: any[], fileOps?: FileOps): OwnCutResult {
+export function buildOwnCut(
+  branchEntries: any[],
+  keepUserTurnsOrFileOps: number | FileOps = 1,
+  maybeFileOps?: FileOps,
+): OwnCutResult {
+  const keepUserTurns = typeof keepUserTurnsOrFileOps === "number" ? keepUserTurnsOrFileOps : 1;
+  const fileOps = typeof keepUserTurnsOrFileOps === "number" ? maybeFileOps : keepUserTurnsOrFileOps;
+  const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
 
   // Find the last compaction entry and its firstKeptEntryId
   let lastCompactionIdx = -1;
@@ -457,10 +464,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     clearPendingAutoContinue();
   });
 
-  pi.on("session_before_compact", (event, ctx) => {
+  pi.on("session_before_compact", (event: any, ctx: any) => {
     const { preparation, branchEntries, customInstructions } = event;
     const { reason, willRetry } = readCompactionEventContext(event);
     const settings = loadSettings();
+    const sourceChars = (branchEntries as any[])
+      .filter((e: any) => e.type === "message")
+      .reduce((sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content), 0);
+    const tokenEstimate = calibrateCharsPerToken(sourceChars, preparation.tokensBefore);
 
     // Always handle explicit /pi-vcc marker.
     // Otherwise, only handle when user opted in via settings.
@@ -468,17 +479,24 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     pendingFollowUpPrompt = null;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
+    const smartKeep = resolveSmartKeepUserTurns({
+      branchEntries: branchEntries as any[],
+      requestedKeepUserTurns: keepUserTurnsExplicit ? keepUserTurns : null,
+      explicit: keepUserTurnsExplicit,
+      smartKeepTail: settings.smartKeepTail,
+      charsPerToken: tokenEstimate.charsPerToken,
+    });
     const fileOps: FileOps = {
       readFiles: [...preparation.fileOps.read],
       modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
     };
-    const ownCut = buildOwnCut(branchEntries as any[], fileOps);
+    const ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, fileOps);
     if (!ownCut.ok) {
-      const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
-      const lastCompIdx = lastComp ? (branchEntries as any[]).indexOf(lastComp) : -1;
+      const lastCompAny: any = [...(branchEntries as any[])].reverse().find((e: any) => e.type === "compaction");
+      const lastCompIdx = lastCompAny ? (branchEntries as any[]).indexOf(lastCompAny) : -1;
 
       // Recompute liveMessages view (same logic as buildOwnCut) for diagnostic
-      const lastKeptId: string | undefined = lastComp?.firstKeptEntryId;
+      const lastKeptId: string | undefined = lastCompAny?.firstKeptEntryId;
       const hasPriorCompaction = lastCompIdx >= 0;
       const hasValidKeptId = !!lastKeptId && (branchEntries as any[]).some((e: any) => e.id === lastKeptId);
       const diagOrphan = hasPriorCompaction && !hasValidKeptId;
@@ -523,10 +541,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
             ? liveRoles
             : [...liveRoles.slice(0, 10), "...", ...liveRoles.slice(-10)],
         },
-        lastCompaction: lastComp ? {
-          hasFirstKeptEntryId: !!lastComp.firstKeptEntryId,
-          foundInBranch: lastComp.firstKeptEntryId
-            ? (branchEntries as any[]).some((e: any) => e.id === lastComp.firstKeptEntryId)
+        lastCompaction: lastCompAny ? {
+          hasFirstKeptEntryId: !!lastCompAny.firstKeptEntryId,
+          foundInBranch: lastCompAny.firstKeptEntryId
+            ? (branchEntries as any[]).some((e: any) => e.id === lastCompAny.firstKeptEntryId)
             : null,
         } : null,
         tail: (branchEntries as any[]).slice(-5).map((e: any) => ({
@@ -659,7 +677,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
 
   // Fire success toast for /compact path only (delayed to let UI settle).
   // /pi-vcc path uses its own onComplete callback in the command handler.
-  pi.on("session_compact", async (event, ctx) => {
+  pi.on("session_compact", async (event: any, ctx: any) => {
     const { reason, willRetry } = readCompactionEventContext(event);
     if (!event.fromExtension) return;
     const followUpPrompt = pendingFollowUpPrompt;
