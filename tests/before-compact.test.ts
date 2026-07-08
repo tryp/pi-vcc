@@ -227,5 +227,4 @@ describe("buildOwnCut", () => {
     expect(r.compactAll).toBe(true);
     expect(r.firstKeptEntryId).toBe("");
   });
-  });
 });
