@@ -31,15 +31,15 @@ describe("compileBrief", () => {
     expect(r).toContain("Output nhìn tốt.\n\n```text\nblock #41: head\ntail\n```\n\n- first\n- second (#96)");
   });
 
-  it("preserves assistant line breaks when head/tail truncating", () => {
+  it("preserves assistant line breaks when truncating", () => {
     const lines = Array.from({ length: 300 }, (_, i) => `line${i} signal${i}`);
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: lines.join("\n") },
     ];
     const r = compileBrief(blocks);
     expect(r).toContain("line0 signal0\nline1 signal1");
-    expect(r).toContain("...(middle truncated)...");
-    expect(r).toContain("\nline299 signal299");
+    expect(r).toContain("(truncated)");
+    expect(r).not.toContain("line299 signal299");
   });
 
   it("renders bash commands as user actions", () => {
@@ -265,38 +265,36 @@ describe("compileBrief", () => {
   });
 
   it("truncates long user text", () => {
-    const longText = Array.from({ length: 300 }, (_, i) => `word${i}`).join(" ");
+    const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "user", text: longText },
     ];
     const r = compileBrief(blocks);
     expect(r).toContain("(truncated)");
-    expect(r).not.toContain("word299");
+    expect(r).not.toContain("word599");
   });
 
-  it("truncates segment-closing assistant text with head and tail", () => {
+  it("truncates long assistant text", () => {
     const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: longText },
     ];
     const r = compileBrief(blocks);
-    expect(r).toContain("...(middle truncated)...");
+    expect(r).toContain("(truncated)");
     expect(r).toContain("word0");
-    expect(r).toContain("word599");
-    expect(r).not.toContain("word300");
+    expect(r).not.toContain("word599");
   });
 
-  it("truncates non-closing assistant text with head and tail", () => {
+  it("truncates non-closing assistant text", () => {
     const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: longText },
       { kind: "tool_call", name: "Read", args: { file_path: "a.ts" } },
     ];
     const r = compileBrief(blocks);
-    expect(r).toContain("...(middle truncated)...");
+    expect(r).toContain("(truncated)");
     expect(r).toContain("word0");
-    expect(r).toContain("word599");
-    expect(r).not.toContain("word300");
+    expect(r).not.toContain("word599");
   });
 
   it("renders a realistic conversation flow", () => {

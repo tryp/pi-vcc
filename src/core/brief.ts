@@ -68,40 +68,6 @@ const truncateTokens = (text: string, limit: number): string => {
   return flat;
 };
 
-const significantWordSpans = (flat: string): { start: number; end: number }[] => {
-  const words: { start: number; end: number }[] = [];
-  for (const seg of segmenter.segment(flat)) {
-    if (!isWord(seg)) continue;
-    if (STOP_WORDS.has(seg.segment.toLowerCase())) continue;
-    words.push({ start: seg.index, end: seg.index + seg.segment.length });
-  }
-  return words;
-};
-
-
-const truncateTokensHeadTail = (text: string, headLimit: number, tailLimit: number): string => {
-  const flat = normalizeForTokenBudget(text);
-  if (headLimit <= 0 || tailLimit <= 0) return flat;
-  const words = significantWordSpans(flat);
-  if (words.length <= headLimit + tailLimit) return flat;
-  const head = flat.slice(0, words[headLimit - 1].end).trimEnd();
-  const tail = flat.slice(words[words.length - tailLimit].start).trimStart();
-  return `${head}\n...(middle truncated)...\n${tail}`;
-};
-
-const nextRenderableBlock = (blocks: NormalizedBlock[], index: number): NormalizedBlock | undefined => {
-  for (let i = index + 1; i < blocks.length; i++) {
-    if (blocks[i].kind !== "tool_result") return blocks[i];
-  }
-  return undefined;
-};
-
-const isSegmentClosingAssistant = (blocks: NormalizedBlock[], index: number): boolean => {
-  if (blocks[index]?.kind !== "assistant") return false;
-  const next = nextRenderableBlock(blocks, index);
-  return !next || next.kind === "user";
-};
-
 // ── bash command compression ──
 
 const BASH_CAP = 200;
@@ -294,9 +260,7 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
           if (stripped === raw) break;
           raw = stripped;
         }
-        const text = isSegmentClosingAssistant(blocks, blockIndex)
-          ? truncateTokensHeadTail(raw, SEGMENT_CLOSING_ASSISTANT_HEAD_WORDS, SEGMENT_CLOSING_ASSISTANT_TAIL_WORDS)
-          : truncateTokensHeadTail(raw, ASSISTANT_HEAD_WORDS, ASSISTANT_TAIL_WORDS);
+        const text = truncateTokens(raw, TRUNCATE_ASSISTANT);
         if (text) {
           const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
           pushText("[assistant]", text, ref);
