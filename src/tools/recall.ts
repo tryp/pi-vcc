@@ -18,18 +18,14 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
     name: "vcc_recall",
     label: "VCC Recall",
     description:
-      "Recall earlier parts of the current session — decisions made, files touched, commands run, " +
-      "including anything dropped by compaction. Reach for this before telling the user you no longer " +
-      "have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged " +
-      "(page); pass expand with entry indices to read full untruncated content. Use mode:'touched' to " +
-      "list files worked on in this session with their entry indices, and #N:path to drill into a file's " +
-      "content from an entry (#N:path:full for all lines). Note: apply_patch paths (inside the diff " +
-      "payload) and bash redirects do not appear in the touched index. Only the current session is " +
-      "searchable — earlier sessions are not.",
+      "Search earlier parts of the current session — decisions, criteria, files touched, commands run, " +
+      "and anything dropped by compaction. Defaults to active lineage; use scope:'all' for other " +
+      "conversation branches. Plain keywords or regex patterns work; results support paging and expand. " +
+      "Use mode:'touched' to list files with entry indices, or #N:path to drill into file content " +
+      "(#N:path:full for all lines). Only the current session is searchable — earlier sessions are not.",
     promptSnippet:
-      "vcc_recall: recall earlier parts of this session before saying the context is gone. " +
-      "Plain keywords work best; scope:'all' widens to other conversation branches. " +
-      "mode:'touched' lists files worked on; #N:path drills into a file's content from an entry.",
+      "vcc_recall: search session history before saying context is gone. Default scope is active lineage; " +
+      "use scope:'all', mode:'touched', or #N:path for broader/file-specific recall."
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({ description: "What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works." }),
