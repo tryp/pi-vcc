@@ -64,9 +64,9 @@ describe("compile", () => {
     expect(r).not.toContain("old blocker");
   });
 
-  it("caps long brief transcript with rolling window", () => {
-    // Build a very long previous transcript
-    const longTranscript = Array.from({ length: 200 }, (_, i) =>
+  it("caps long brief transcript with proportional rolling window", () => {
+    // Build a very long previous transcript (3000 lines, exceeds BRIEF_MAX_LINES=2000)
+    const longTranscript = Array.from({ length: 3000 }, (_, i) =>
       `[user]\nmessage ${i}`
     ).join("\n\n");
     const previousSummary = `[Session Goal]\n- goal\n\n---\n\n${longTranscript}`;

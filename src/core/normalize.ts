@@ -30,6 +30,7 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
       kind: "tool_result",
       name: msg.toolName,
       text: sanitize(textOf(msg.content)),
+      isError: (msg as any).isError ?? false,
       sourceIndex: msgIndex,
     }];
   }

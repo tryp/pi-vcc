@@ -54,4 +54,52 @@ describe("buildSections", () => {
     const matches = r.briefTranscript.match(/\[assistant\]/g);
     expect(matches?.length).toBe(1);
   });
+
+  it("formatFileActivity emits per-file details with edit count and status", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { file_path: "/home/dev/src/auth.ts" }, sourceIndex: 0 },
+      { kind: "tool_call", name: "Edit", args: { file_path: "/home/dev/src/auth.ts" }, sourceIndex: 1 },
+      { kind: "tool_call", name: "Edit", args: { file_path: "/home/dev/src/auth.ts" }, sourceIndex: 2 },
+      { kind: "tool_call", name: "Read", args: { file_path: "/home/dev/src/utils.ts" }, sourceIndex: 3 },
+    ];
+    const r = buildSections({ blocks });
+    const fac = r.filesAndChanges;
+    expect(fac.length).toBeGreaterThan(0);
+    // Modified file — should have count and status
+    const modifiedLine = fac.find((l) => l.startsWith("Modified: auth.ts"));
+    expect(modifiedLine).toBeDefined();
+    expect(modifiedLine).toContain("—");
+    expect(modifiedLine).toContain("Edited");
+    expect(modifiedLine).toContain("2 edits");
+    expect(modifiedLine).toContain("Status: done");
+    // Read file — no status
+    const readLine = fac.find((l) => l.startsWith("Read: utils.ts"));
+    expect(readLine).toBeDefined();
+    expect(readLine).toContain("—");
+  });
+
+  it("formatFileActivity detects error status after failing bash", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Edit", args: { file_path: "src/auth.ts" }, sourceIndex: 0 },
+      { kind: "tool_call", name: "Read", args: { file_path: "src/utils.ts" }, sourceIndex: 1 },
+      { kind: "tool_result", name: "Edit", text: "ok", sourceIndex: 2 },
+      { kind: "bash", command: "npm test", output: "Error: auth.ts has syntax error", exitCode: 1, sourceIndex: 3 },
+    ];
+    const r = buildSections({ blocks });
+    const fac = r.filesAndChanges;
+    // Use relative paths so no prefix trimming
+    const modifiedLine = fac.find((l) => l.startsWith("Modified: src/auth.ts"));
+    expect(modifiedLine).toBeDefined();
+    expect(modifiedLine).toContain("Status: needs fix");
+  });
+
+  it("formatFileActivity falls back to flat format when details are empty", () => {
+    // When blocks have no tool_calls with file paths, details will be empty
+    const blocks: NormalizedBlock[] = [
+      { kind: "user", text: "hello" },
+      { kind: "assistant", text: "world" },
+    ];
+    const r = buildSections({ blocks });
+    expect(r.filesAndChanges).toEqual([]);
+  });
 });

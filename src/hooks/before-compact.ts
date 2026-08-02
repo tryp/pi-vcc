@@ -6,7 +6,7 @@ import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
 import type { PiVccCompactionDetails } from "../details";
-import type { CompactionReason } from "../types";
+import type { CompactionReason, FileOps } from "../types";
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 
@@ -269,7 +269,76 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
   return liveMessages;
 };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResult {
+/** Extract text from message content for working-set matching. */
+const extractContentString = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: any) => p?.type === "text" || typeof p === "string")
+      .map((p: any) => (typeof p === "string" ? p : p.text || ""))
+      .join("\n")
+      .trim();
+  }
+  return "";
+};
+
+/** Collect full paths, basenames, and stem names for working-set matching. */
+const collectWorkingFiles = (fileOps: FileOps): Set<string> => {
+  const files = new Set<string>();
+  for (const f of [
+    ...(fileOps.readFiles ?? []),
+    ...(fileOps.modifiedFiles ?? []),
+    ...(fileOps.createdFiles ?? []),
+  ]) {
+    files.add(f);
+    const basename = f.split("/").pop();
+    if (basename) {
+      files.add(basename);
+      const dotIdx = basename.lastIndexOf(".");
+      if (dotIdx > 0) files.add(basename.slice(0, dotIdx));
+    }
+  }
+  return files;
+};
+
+/** Extend the retained tail to preserve recent messages about active files. */
+const extendTailForWorkingSet = (
+  liveMessages: EntryWithMessage[],
+  currentCutIdx: number,
+  fileOps?: FileOps,
+): number => {
+  if (!fileOps || currentCutIdx <= 0) return currentCutIdx;
+  const workingFiles = collectWorkingFiles(fileOps);
+  if (workingFiles.size === 0) return currentCutIdx;
+
+  const minAllowedIdx = Math.max(0, liveMessages.length - TAIL_MAX_MESSAGES);
+  let extendedCutIdx = currentCutIdx;
+  for (let i = currentCutIdx - 1; i >= minAllowedIdx; i--) {
+    const message = liveMessages[i].message;
+    if (message.role === "user") break;
+    if (message.role !== "assistant" && message.role !== "toolResult") continue;
+    const content = extractContentString(message.content);
+    if ([...workingFiles].some((file) => content.includes(file))) {
+      extendedCutIdx = i;
+    }
+  }
+
+  // Never cut at a tool result without retaining its tool-call assistant.
+  while (
+    extendedCutIdx > 0 &&
+    extendedCutIdx < liveMessages.length &&
+    liveMessages[extendedCutIdx].message.role === "toolResult"
+  ) {
+    extendedCutIdx--;
+  }
+  return extendedCutIdx;
+};
+
+export function buildOwnCut(
+  branchEntries: any[],
+  keepUserTurns = 1,
+  fileOps?: FileOps,
+): OwnCutResult {
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
   const liveMessages = collectLiveMessages(branchEntries);
 
@@ -305,10 +374,13 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
     return compactAll(true);
   }
 
+  // Preserve recent assistant/tool context for files in the active working set.
+  const extendedCutIdx = extendTailForWorkingSet(liveMessages, cutIdx, fileOps);
+
   return {
     ok: true,
-    messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
-    firstKeptEntryId: liveMessages[cutIdx].entry.id,
+    messages: liveMessages.slice(0, extendedCutIdx).map((e) => e.message),
+    firstKeptEntryId: liveMessages[extendedCutIdx].entry.id,
     compactAll: false,
     keptUserTurns: userIndices.length - targetUserIdx,
     totalUserTurns: userIndices.length,
@@ -527,7 +599,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       smartKeepTail: settings.smartKeepTail,
       charsPerToken: tokenEstimate.charsPerToken,
     });
-    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
+    const fileOps: FileOps = {
+      readFiles: [...preparation.fileOps.read],
+      modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
+    };
+    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, fileOps);
     // Default path only: rescue autonomous / oversized-tail sessions with a
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {

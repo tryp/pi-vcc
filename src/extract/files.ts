@@ -1,14 +1,7 @@
-import type { FileOps, NormalizedBlock } from "../types";
+import type { FileOps, NormalizedBlock, FileActivity, PerFileDetail } from "../types";
 import { extractPath } from "../core/tool-args";
 
-interface FileActivity {
-  read: Set<string>;
-  modified: Set<string>;
-  created: Set<string>;
-}
 
-// Tool names are matched case-insensitively (see `matches`), mirroring the /i
-// regexes in core/rank.ts. Entries must be lowercase.
 const FILE_READ_TOOLS = new Set([
   "read", "read_file", "view",
 ]);
@@ -25,7 +18,13 @@ const FILE_CREATE_TOOLS = new Set([
   "write", "write_file",
 ]);
 
-const matches = (tools: Set<string>, name: string): boolean => tools.has(name.toLowerCase());
+/** Tools that count as edits (writes that modify existing files) */
+const FILE_EDIT_TOOLS = new Set([
+  "Edit", "edit", "edit_file", "MultiEdit",
+]);
+
+/** Patterns in bash output or tool_error that indicate a problem with a file */
+const FILE_STATUS_NEGATIVE_RE = /\b(fail|error|exit code [1-9]|not found|syntax|unexpected|cannot)\b/i;
 
 /**
  * Find the longest common directory prefix among absolute paths.
@@ -59,29 +58,107 @@ export const extractFiles = (
   blocks: NormalizedBlock[],
   fileOps?: FileOps,
 ): FileActivity => {
-  const act: FileActivity = {
-    read: new Set(fileOps?.readFiles ?? []),
-    modified: new Set(fileOps?.modifiedFiles ?? []),
-    created: new Set(fileOps?.createdFiles ?? []),
-  };
+  const details = new Map<string, PerFileDetail>();
+  const read = new Set(fileOps?.readFiles ?? []);
+  const modified = new Set(fileOps?.modifiedFiles ?? []);
+  const created = new Set(fileOps?.createdFiles ?? []);
 
-  for (const b of blocks) {
+  // First pass: collect all file operations from tool_calls
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
     if (b.kind !== "tool_call") continue;
     const p = extractPath(b.args);
     if (!p) continue;
 
-    if (matches(FILE_READ_TOOLS, b.name)) act.read.add(p);
-    if (matches(FILE_WRITE_TOOLS, b.name)) act.modified.add(p);
-    if (matches(FILE_CREATE_TOOLS, b.name)) act.created.add(p);
+    if (FILE_READ_TOOLS.has(b.name)) read.add(p);
+    if (FILE_WRITE_TOOLS.has(b.name)) modified.add(p);
+    if (FILE_CREATE_TOOLS.has(b.name)) created.add(p);
+
+    const op = { tool: b.name, timestamp: i };
+    const existing = details.get(p);
+    if (existing) {
+      existing.ops.push(op);
+    } else {
+      details.set(p, {
+        path: p,
+        ops: [op],
+        status: FILE_CREATE_TOOLS.has(b.name) ? "needs fixtures" : undefined,
+      });
+    }
   }
 
-  const all = [...act.read, ...act.modified, ...act.created];
+  // Second pass: detect error status after file writes
+  const lastWriteIndex = new Map<string, number>();
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.kind === "tool_call") {
+      const p = extractPath(b.args);
+      if (p && (FILE_WRITE_TOOLS.has(b.name) || FILE_CREATE_TOOLS.has(b.name))) {
+        lastWriteIndex.set(p, i);
+      }
+    }
+    // Check bash blocks with non-zero exit codes for file references
+    if (b.kind === "bash" && b.exitCode != null && b.exitCode !== 0) {
+      const cmdOutput = ((b.command || "") + " " + (b.output || "")).toLowerCase();
+      for (const [filePath, writeIdx] of lastWriteIndex) {
+        if (writeIdx >= i) continue; // only check blocks after the write
+        const basename = filePath.split("/").pop()?.toLowerCase() || "";
+        if (cmdOutput.includes(basename) || cmdOutput.includes(filePath.toLowerCase())) {
+          const detail = details.get(filePath);
+          if (detail && !detail.status) {
+            detail.status = "needs fix";
+          }
+        }
+      }
+    }
+    // Check tool_result blocks with errors
+    if (b.kind === "tool_result" && b.isError) {
+      const errText = (b.text || "").toLowerCase();
+      for (const [filePath, writeIdx] of lastWriteIndex) {
+        if (writeIdx >= i) continue;
+        const basename = filePath.split("/").pop()?.toLowerCase() || "";
+        if (errText.includes(basename) || errText.includes(filePath.toLowerCase())) {
+          const detail = details.get(filePath);
+          if (detail && !detail.status) {
+            detail.status = "needs fix";
+          }
+        }
+      }
+    }
+  }
+
+  // Mark modified files without detected errors as "done"
+  for (const p of modified) {
+    const detail = details.get(p);
+    if (detail && detail.ops.some((o) => FILE_EDIT_TOOLS.has(o.tool)) && !detail.status) {
+      detail.status = "done";
+    }
+  }
+
+  // Dedup: if already Modified, drop from Created (file existed before)
+  for (const p of modified) created.delete(p);
+
+  // Apply common-dir prefix trimming to sets and detail keys
+  const all = [...read, ...modified, ...created];
   const prefix = longestCommonDirPrefix(all);
   if (prefix) {
-    act.read = trimPaths(act.read, prefix);
-    act.modified = trimPaths(act.modified, prefix);
-    act.created = trimPaths(act.created, prefix);
+    const trimSet = (s: Set<string>) => {
+      const out = new Set<string>();
+      for (const p of s) out.add(p.startsWith(prefix) ? p.slice(prefix.length) : p);
+      return out;
+    };
+    const trimmedDetails = new Map<string, PerFileDetail>();
+    for (const [p, d] of details) {
+      const tp = p.startsWith(prefix) ? p.slice(prefix.length) : p;
+      trimmedDetails.set(tp, { ...d, path: tp });
+    }
+    return {
+      read: trimSet(read),
+      modified: trimSet(modified),
+      created: trimSet(created),
+      details: trimmedDetails,
+    };
   }
 
-  return act;
+  return { read, modified, created, details };
 };

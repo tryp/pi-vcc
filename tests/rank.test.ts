@@ -165,7 +165,7 @@ describe("section-aware brief ranking prototype", () => {
   });
 
   it("keeps fresh ranked brief and gives previous brief the remaining budget", () => {
-    const previousBrief = Array.from({ length: 200 }, (_, i) => `[user]\nold context ${i}`).join("\n\n");
+    const previousBrief = Array.from({ length: 700 }, (_, i) => `[user]\nold context ${i}`).join("\n\n");
     const previousSummary = `[Session Goal]\n- Original goal\n\n---\n\n${previousBrief}`;
     const ranked = compileRanked({
       previousSummary,
@@ -183,7 +183,7 @@ describe("section-aware brief ranking prototype", () => {
     expect(ranked).toContain('* Edit "src/fresh.ts"');
     expect(ranked).toContain('* bash "bun test tests/fresh.test.ts"');
     expect(ranked).toContain("Fresh ranked fix passed tests.");
-    expect(ranked).toContain("old context 199");
+    expect(ranked).toContain("old context 699");
     expect(ranked).not.toContain("old context 0");
   });
 

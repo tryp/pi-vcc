@@ -8,9 +8,22 @@ export interface FileOps {
   createdFiles?: string[];
 }
 
+export interface PerFileDetail {
+  path: string;
+  ops: Array<{ tool: string; timestamp: number }>;
+  status?: string;
+}
+
+export interface FileActivity {
+  read: Set<string>;
+  modified: Set<string>;
+  created: Set<string>;
+  details: Map<string, PerFileDetail>;
+}
+
 export type NormalizedBlock =
   | { kind: "user"; text: string; sourceIndex?: number }
   | { kind: "assistant"; text: string; sourceIndex?: number }
   | { kind: "tool_call"; name: string; args: Record<string, unknown>; sourceIndex?: number }
-  | { kind: "tool_result"; name: string; text: string; sourceIndex?: number }
+  | { kind: "tool_result"; name: string; text: string; isError?: boolean; sourceIndex?: number }
   | { kind: "bash"; command: string; output: string; exitCode: number | undefined; sourceIndex?: number };

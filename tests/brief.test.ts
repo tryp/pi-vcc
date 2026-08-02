@@ -31,15 +31,15 @@ describe("compileBrief", () => {
     expect(r).toContain("Output nhìn tốt.\n\n```text\nblock #41: head\ntail\n```\n\n- first\n- second (#96)");
   });
 
-  it("preserves assistant line breaks when head/tail truncating", () => {
+  it("preserves assistant line breaks when truncating", () => {
     const lines = Array.from({ length: 300 }, (_, i) => `line${i} signal${i}`);
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: lines.join("\n") },
     ];
     const r = compileBrief(blocks);
     expect(r).toContain("line0 signal0\nline1 signal1");
-    expect(r).toContain("...(middle truncated)...");
-    expect(r).toContain("\nline299 signal299");
+    expect(r).toContain("(truncated)");
+    expect(r).not.toContain("line299 signal299");
   });
 
   it("renders bash commands as user actions", () => {
@@ -215,7 +215,7 @@ describe("compileBrief", () => {
     expect(matches?.length).toBe(1);
   });
 
-  it("hides non-error tool results", () => {
+  it("hides non-error tool results without result-like content", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "tool_result", name: "Read", text: "const x = 1;\nconst y = 2;\n// lots of code" },
     ];
@@ -223,12 +223,21 @@ describe("compileBrief", () => {
     expect(r).toBe("");
   });
 
-  it("hides tool results regardless of output text", () => {
+  it("shows error tool results as one-liner", () => {
     const blocks: NormalizedBlock[] = [
-      { kind: "tool_result", name: "bash", text: "FAIL auth.test.ts\nexpected 200 got 401" },
+      { kind: "tool_result", name: "bash", text: "FAIL auth.test.ts\nexpected 200 got 401", isError: true },
     ];
     const r = compileBrief(blocks);
-    expect(r).toBe("");
+    expect(r).toContain("bash failed");
+    expect(r).toContain("FAIL auth.test.ts");
+  });
+
+  it("shows tool results with key result keywords", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_result", name: "bash", text: "RMS error: 15.84 dB\nAll tests passed" },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain("RMS error: 15.84 dB");
   });
 
   it("merges adjacent assistant sections", () => {
@@ -256,38 +265,36 @@ describe("compileBrief", () => {
   });
 
   it("truncates long user text", () => {
-    const longText = Array.from({ length: 300 }, (_, i) => `word${i}`).join(" ");
+    const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "user", text: longText },
     ];
     const r = compileBrief(blocks);
     expect(r).toContain("(truncated)");
-    expect(r).not.toContain("word299");
+    expect(r).not.toContain("word599");
   });
 
-  it("truncates segment-closing assistant text with head and tail", () => {
+  it("truncates long assistant text", () => {
     const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: longText },
     ];
     const r = compileBrief(blocks);
-    expect(r).toContain("...(middle truncated)...");
+    expect(r).toContain("(truncated)");
     expect(r).toContain("word0");
-    expect(r).toContain("word599");
-    expect(r).not.toContain("word300");
+    expect(r).not.toContain("word599");
   });
 
-  it("truncates non-closing assistant text with head and tail", () => {
+  it("truncates non-closing assistant text", () => {
     const longText = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
     const blocks: NormalizedBlock[] = [
       { kind: "assistant", text: longText },
       { kind: "tool_call", name: "Read", args: { file_path: "a.ts" } },
     ];
     const r = compileBrief(blocks);
-    expect(r).toContain("...(middle truncated)...");
+    expect(r).toContain("(truncated)");
     expect(r).toContain("word0");
-    expect(r).toContain("word599");
-    expect(r).not.toContain("word300");
+    expect(r).not.toContain("word599");
   });
 
   it("renders a realistic conversation flow", () => {
@@ -319,8 +326,9 @@ describe("compileBrief", () => {
     // Hidden content
     expect(r).not.toContain("think");
     expect(r).not.toContain("export function login");
+    // Tool errors and result-like outputs are now summarized
+    // "File edited successfully" doesn't match result keywords → hidden
     expect(r).not.toContain("File edited successfully");
-    expect(r).not.toContain("All tests passed");
   });
 
   // ── noise filtering tests (aligned with VCC) ──

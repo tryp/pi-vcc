@@ -67,44 +67,103 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
   return `[${header}]\n${capped.join("\n")}`;
 };
 
-/** Merge Files And Changes by category, dedup paths across compactions */
-const mergeFileLines = (prev: string, fresh: string): string => {
-  const categories = ["Modified", "Created", "Read"] as const;
-  const merged: Record<string, Set<string>> = {};
-  for (const cat of categories) merged[cat] = new Set();
+/**
+ * Parse file paths from a single "[Files And Changes]" line.
+ * Handles both formats:
+ *   Old flat: "- Modified: file1, file2 (+N more)"
+ *   New per-file: "- Modified: path — description. Status: status"
+ * Returns array of { category, path, status?, description? }.
+ */
+interface FileEntry {
+  category: "Modified" | "Created" | "Read";
+  path: string;
+  status?: string;
+  description?: string;
+}
 
-  // Parse "- Modified: a, b, c (+N more)" lines from both prev and fresh
-  for (const text of [prev, fresh]) {
+const parseFileEntries = (line: string): FileEntry[] => {
+  const categories = ["Modified", "Created", "Read"] as const;
+  for (const cat of categories) {
+    const prefix = `- ${cat}: `;
+    if (!line.startsWith(prefix)) continue;
+    const rest = line.slice(prefix.length);
+
+    // New per-file format: "path — description[. Status: status]"
+    const newFormatMatch = rest.match(/^(.+?) — (.+)$/);
+    if (newFormatMatch) {
+      const path = newFormatMatch[1].trim();
+      const descPart = newFormatMatch[2];
+      const statusMatch = descPart.match(/^(.+?)\. Status: (.+)$/);
+      return [{
+        category: cat,
+        path,
+        description: statusMatch ? statusMatch[1].trim() : descPart.trim(),
+        status: statusMatch ? statusMatch[2].trim() : undefined,
+      }];
+    }
+
+    // Old flat format: "file1, file2 (+N more)"
+    const flatClean = rest.replace(/\s*\(\+\d+ more\)\s*$/, "").trim();
+    if (!flatClean) continue;
+    return flatClean.split(",").map((p) => p.trim()).filter(Boolean).map((path) => ({
+      category: cat,
+      path,
+    }));
+  }
+  return [];
+};
+
+/** Merge Files And Changes by path, keeping most recent information */
+const mergeFileLines = (prev: string, fresh: string): string => {
+  // Collect entries: fresh takes priority, then prev
+  const entries = new Map<string, FileEntry>();
+
+  const collect = (text: string, isFresh: boolean) => {
     for (const line of text.split("\n")) {
-      for (const cat of categories) {
-        const prefix = `- ${cat}: `;
-        if (!line.startsWith(prefix)) continue;
-        let rest = line.slice(prefix.length);
-        // Strip "(+N more)" suffix
-        rest = rest.replace(/\s*\(\+\d+ more\)\s*$/, "");
-        for (const p of rest.split(",")) {
-          const trimmed = p.trim();
-          if (trimmed) merged[cat].add(trimmed);
+      for (const entry of parseFileEntries(line)) {
+        if (!entry.path) continue;
+        // Fresh entries override; prev entries fill gaps
+        if (!entries.has(entry.path) || isFresh) {
+          entries.set(entry.path, entry);
         }
       }
     }
-  }
-
-  // Dedup: if already in Modified, drop from Created (file existed before)
-  for (const p of merged.Modified) merged.Created.delete(p);
-
-  const cap = (set: Set<string>, limit: number) => {
-    const arr = [...set];
-    if (arr.length <= limit) return arr.join(", ");
-    return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
   };
 
-  const lines: string[] = [];
-  if (merged.Modified.size > 0) lines.push(`- Modified: ${cap(merged.Modified, 10)}`);
-  if (merged.Created.size > 0) lines.push(`- Created: ${cap(merged.Created, 10)}`);
-  if (merged.Read.size > 0) lines.push(`- Read: ${cap(merged.Read, 10)}`);
-  if (lines.length === 0) return "";
-  return `[Files And Changes]\n${lines.join("\n")}`;
+  collect(prev, false);
+  collect(fresh, true);
+
+  // Dedup: if a path is both Modified and Created, keep Modified
+  const modifiedPaths = new Set<string>();
+  for (const [path, entry] of entries) {
+    if (entry.category === "Modified") modifiedPaths.add(path);
+  }
+  for (const path of modifiedPaths) {
+    const entry = entries.get(path);
+    if (entry && entry.category === "Created") entries.delete(path);
+  }
+
+  // Build output in per-file format, grouped by category
+  const modifiedLines: string[] = [];
+  const createdLines: string[] = [];
+  const readLines: string[] = [];
+
+  for (const [path, entry] of entries) {
+    // Skip Created if Modified exists (handled above, but double-check)
+    if (entry.category === "Created" && modifiedPaths.has(path)) continue;
+
+    const desc = entry.description
+      ? ` — ${entry.description}${entry.status ? `. Status: ${entry.status}` : ""}`
+      : "";
+    const line = `- ${entry.category}: ${path}${desc}`;
+    if (entry.category === "Modified") modifiedLines.push(line);
+    else if (entry.category === "Created") createdLines.push(line);
+    else readLines.push(line);
+  }
+
+  const allLines = [...modifiedLines, ...createdLines, ...readLines];
+  if (allLines.length === 0) return "";
+  return `[Files And Changes]\n${allLines.join("\n")}`;
 };
 
 const mergeBriefTranscript = (prev: string, fresh: string): string => {
