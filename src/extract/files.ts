@@ -70,9 +70,10 @@ export const extractFiles = (
     const p = extractPath(b.args);
     if (!p) continue;
 
-    if (FILE_READ_TOOLS.has(b.name)) read.add(p);
-    if (FILE_WRITE_TOOLS.has(b.name)) modified.add(p);
-    if (FILE_CREATE_TOOLS.has(b.name)) created.add(p);
+    const toolName = b.name.toLowerCase();
+    if (FILE_READ_TOOLS.has(toolName)) read.add(p);
+    if (FILE_WRITE_TOOLS.has(toolName)) modified.add(p);
+    if (FILE_CREATE_TOOLS.has(toolName)) created.add(p);
 
     const op = { tool: b.name, timestamp: i };
     const existing = details.get(p);
@@ -82,7 +83,7 @@ export const extractFiles = (
       details.set(p, {
         path: p,
         ops: [op],
-        status: FILE_CREATE_TOOLS.has(b.name) ? "needs fixtures" : undefined,
+        status: FILE_CREATE_TOOLS.has(toolName) ? "needs fixtures" : undefined,
       });
     }
   }
@@ -93,7 +94,8 @@ export const extractFiles = (
     const b = blocks[i];
     if (b.kind === "tool_call") {
       const p = extractPath(b.args);
-      if (p && (FILE_WRITE_TOOLS.has(b.name) || FILE_CREATE_TOOLS.has(b.name))) {
+      const toolName = b.name.toLowerCase();
+      if (p && (FILE_WRITE_TOOLS.has(toolName) || FILE_CREATE_TOOLS.has(toolName))) {
         lastWriteIndex.set(p, i);
       }
     }
@@ -130,13 +132,13 @@ export const extractFiles = (
   // Mark modified files without detected errors as "done"
   for (const p of modified) {
     const detail = details.get(p);
-    if (detail && detail.ops.some((o) => FILE_EDIT_TOOLS.has(o.tool)) && !detail.status) {
+    if (detail && detail.ops.some((o) => FILE_EDIT_TOOLS.has(o.tool.toLowerCase())) && !detail.status) {
       detail.status = "done";
     }
   }
 
-  // Dedup: if already Modified, drop from Created (file existed before)
-  for (const p of modified) created.delete(p);
+  // A Write operation can represent both creation and modification; retain both
+  // classifications here. Presentation deduplicates the displayed entry.
 
   // Apply common-dir prefix trimming to sets and detail keys
   const all = [...read, ...modified, ...created];

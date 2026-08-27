@@ -13,6 +13,14 @@ const PAGE_SIZE = 5;
 export const invalidExpandIndices = (requested: number[], available: Set<number>): number[] =>
   requested.filter((i) => !Number.isInteger(i) || !available.has(i));
 
+type RecallParams = {
+  query?: string;
+  expand?: number[];
+  page?: number;
+  scope?: "lineage" | "all";
+  mode?: "hybrid" | "touched";
+};
+
 export const registerRecallTool = (pi: ExtensionAPI) => {
   pi.registerTool({
     name: "vcc_recall",
@@ -25,7 +33,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
       "(#N:path:full for all lines). Only the current session is searchable — earlier sessions are not.",
     promptSnippet:
       "vcc_recall: search session history before saying context is gone. Default scope is active lineage; " +
-      "use scope:'all', mode:'touched', or #N:path for broader/file-specific recall."
+      "use scope:'all', mode:'touched', or #N:path for broader/file-specific recall.",
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({ description: "What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works." }),
@@ -49,7 +57,13 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         ], { description: "What to show. hybrid (default) = normal search; touched = aggregated files-by-path with entry indices." }),
       ),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(
+      _toolCallId: string,
+      params: RecallParams,
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: any,
+    ) {
       const sessionFile = ctx.sessionManager.getSessionFile();
       if (!sessionFile) {
         return {

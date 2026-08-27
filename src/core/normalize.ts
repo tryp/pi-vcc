@@ -26,11 +26,12 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
   }
 
   if (msg.role === "toolResult") {
+    const isError = (msg as any).isError === true;
     return [{
       kind: "tool_result",
       name: msg.toolName,
       text: sanitize(textOf(msg.content)),
-      isError: (msg as any).isError ?? false,
+      ...(isError ? { isError: true } : {}),
       sourceIndex: msgIndex,
     }];
   }

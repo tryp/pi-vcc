@@ -161,6 +161,9 @@ const dbg = (settings: PiVccSettings, data: Record<string, unknown>) => {
   try { writeFileSync("/tmp/pi-vcc-debug.json", JSON.stringify(data, null, 2)); } catch {}
 };
 
+/** Maximum messages to retain while extending the tail for active files. */
+const TAIL_MAX_MESSAGES = 30;
+
 const previewContent = (content: unknown): string => {
   if (typeof content === "string") return content.slice(0, 300);
   if (Array.isArray(content)) {
@@ -336,9 +339,11 @@ const extendTailForWorkingSet = (
 
 export function buildOwnCut(
   branchEntries: any[],
-  keepUserTurns = 1,
-  fileOps?: FileOps,
+  keepUserTurnsOrFileOps: number | FileOps = 1,
+  maybeFileOps?: FileOps,
 ): OwnCutResult {
+  const keepUserTurns = typeof keepUserTurnsOrFileOps === "number" ? keepUserTurnsOrFileOps : 1;
+  const fileOps = typeof keepUserTurnsOrFileOps === "number" ? maybeFileOps : keepUserTurnsOrFileOps;
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
   const liveMessages = collectLiveMessages(branchEntries);
 
