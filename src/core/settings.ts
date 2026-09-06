@@ -36,6 +36,8 @@ export interface PiVccSettings {
    * Overflow retry is still owned by pi-core via willRetry.
    */
   continueAfterThresholdCompact: boolean;
+  /** When true (default), continue after manual compaction when the turn ended in error. */
+  continueAfterManualCompactionOnError: boolean;
   /** Write debug snapshot to /tmp/pi-vcc-debug.json on each compaction. */
   debug: boolean;
 }
@@ -44,6 +46,7 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   overrideDefaultCompaction: true,
   smartKeepTail: true,
   continueAfterThresholdCompact: true,
+  continueAfterManualCompactionOnError: true,
   debug: false,
 };
 

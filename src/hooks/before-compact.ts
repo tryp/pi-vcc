@@ -33,6 +33,7 @@ export type BudgetCutKind = "no_anchor" | "oversized_tail";
 export const OVERSIZED_TAIL_FACTOR = 2.5;
 
 let lastStats: CompactionStats | null = null;
+let lastCompactFollowedError = false;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
 let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
@@ -570,6 +571,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
   });
 
   pi.on("session_before_compact", (event, ctx) => {
+    lastCompactFollowedError = false;
     const { preparation, branchEntries, customInstructions } = event;
     const { reason, willRetry } = readCompactionEventContext(event);
     const settings = loadSettings();
@@ -579,6 +581,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
     pendingFollowUpPrompt = null;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
+
+    const liveMessages = collectLiveMessages(branchEntries as any[]);
+    const lastLiveAssistant = [...liveMessages].reverse().find((entry) => entry.message.role === "assistant");
+    lastCompactFollowedError = lastLiveAssistant?.message.stopReason === "error";
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
     const calibrationMessageChars = calibrationCut.ok
@@ -811,13 +817,16 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     if (willRetry) return;
     const stats = lastStats;
     if (!stats) return;
-    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && loadSettings().continueAfterThresholdCompact;
+    const settings = loadSettings();
+    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && settings.continueAfterThresholdCompact;
+    const shouldContinueAfterManualError = reason === "manual" && lastCompactFollowedError && settings.continueAfterManualCompactionOnError;
+    const shouldContinue = shouldContinueAfterAutoCompact || shouldContinueAfterManualError;
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
       try {
         await pi.sendUserMessage(followUpPrompt);
       } catch {}
-    } else if (shouldContinueAfterAutoCompact) {
+    } else if (shouldContinue) {
       scheduleAutoContinue(pi);
     }
   });

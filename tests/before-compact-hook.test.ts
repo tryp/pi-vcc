@@ -286,6 +286,42 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(customMessages[0].message.content).toEqual([]);
   });
 
+  test("manual compact auto-continues when last assistant ended in error", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), { ...msg("m2", "assistant"), message: { ...msg("m2", "assistant").message, stopReason: "error" } }, msg("m3", "user"), msg("m4", "assistant")];
+    // The final live assistant is the errored turn.
+    entries[3].message.stopReason = "error";
+    invokeBefore(makeEvent(entries, undefined, { reason: "manual", willRetry: false }));
+    await invokeCompact({ type: "session_compact", fromExtension: true, reason: "manual", willRetry: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(customMessages).toHaveLength(1);
+  });
+
+  test("manual compact does not continue without an error", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    invokeBefore(makeEvent(entries, undefined, { reason: "manual", willRetry: false }));
+    await invokeCompact({ type: "session_compact", fromExtension: true, reason: "manual", willRetry: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(customMessages).toEqual([]);
+  });
+
+  test("manual error continuation can be disabled", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true, continueAfterManualCompactionOnError: false });
+    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    entries[3].message.stopReason = "error";
+    invokeBefore(makeEvent(entries, undefined, { reason: "manual", willRetry: false }));
+    await invokeCompact({ type: "session_compact", fromExtension: true, reason: "manual", willRetry: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(customMessages).toEqual([]);
+  });
+
   test("threshold compact continuation is canceled when a real user prompt starts", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore, invokeCompact, invokeBeforeAgentStart, customMessages } = createMockPi();
