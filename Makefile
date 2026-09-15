@@ -6,19 +6,25 @@
 #
 # Usage:
 #   make test        # run interface tests
-#   make smoke-test  # quick-check extension loads in a real pi session
-#   make deploy      # backup copy to npm location (not required)
-#   make verify      # check deploy matches source
+#   make smoke-test  # quick-check the source candidate in a fresh pi process
+#   make deploy      # copy, stamp, verify, and smoke-test the npm location
+#   make verify      # check deploy content and stamp match source
+#   make deployed-commit # show the deployed source commit
 
 RUNTIME ?= $(HOME)/.pi/agent/npm/node_modules/@sting8k/pi-vcc
 SOURCE ?= $(CURDIR)
+SMOKE_SCRIPT ?= /home/dev/src/pi-session-analysis/scripts/predeploy_smoke.py
+SMOKE_TIMEOUT ?= 90
 PI_MONO ?= /home/dev/src/pi-mono
 PI_CODING_AGENT ?= $(PI_MONO)/node_modules/@earendil-works/pi-coding-agent
 PI_AI ?= $(PI_MONO)/node_modules/@earendil-works/pi-ai
 PI_AGENT_CORE ?= $(PI_MONO)/node_modules/@earendil-works/pi-agent-core
 PI_TUI ?= $(PI_MONO)/node_modules/@earendil-works/pi-tui
 
-.PHONY: deploy verify link-packages test test-all smoke-test
+DEPLOY_FILES := index.ts package.json tsconfig.json README.md
+DEPLOY_DIRS := src scripts tests
+
+.PHONY: deploy verify deployed-commit link-packages test test-all smoke-test candidate-smoke-test runtime-smoke-test
 
 link-packages:
 	@mkdir -p node_modules node_modules/@earendil-works node_modules/@mariozechner
@@ -37,37 +43,68 @@ test: link-packages  ## Run interface tests
 
 test-all: test smoke-test  ## Run all tests
 
-smoke-test:  ## Check extension loads in a real pi session
-	@echo "Smoke testing pi-vcc extension in pi..."
-	@rm -f /tmp/pi-vcc-smoke.jsonl
-	@(timeout 120 pi --mode json --no-extensions --extension "$(SOURCE)/index.ts" --no-session -p "list your available tools" > /tmp/pi-vcc-smoke.jsonl 2>&1) &
-	@PID=$$!; \
-	  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
-	    if grep -q 'vcc_recall' /tmp/pi-vcc-smoke.jsonl 2>/dev/null; then \
-	      echo "  OK: vcc_recall tool found in pi output"; \
-	      kill $$PID 2>/dev/null; exit 0; \
-	    fi; \
-	    sleep 2; \
-	  done; \
-	  echo "  WARN: pi not responding — check /tmp/pi-vcc-smoke.jsonl"; \
-	  kill $$PID 2>/dev/null; exit 1
+candidate-smoke-test:  ## Load the source candidate in a fresh, isolated pi process
+	python3 "$(SMOKE_SCRIPT)" \
+	  --extension "$(SOURCE)/index.ts" \
+	  --tool vcc_recall \
+	  --timeout "$(SMOKE_TIMEOUT)" \
+	  --prompt 'List your available tools, report that pi-vcc loaded, and stop.'
 
-deploy: ## Backup copy to npm location (not required — pi loads from source)
-	@echo "Backing up pi-vcc to $(RUNTIME)..."
-	cp "$(SOURCE)/index.ts" "$(RUNTIME)/index.ts"
-	cp "$(SOURCE)/package.json" "$(RUNTIME)/package.json"
-	cp "$(SOURCE)/tsconfig.json" "$(RUNTIME)/tsconfig.json" 2>/dev/null || true
-	cp "$(SOURCE)/README.md" "$(RUNTIME)/README.md" 2>/dev/null || true
-	rm -rf "$(RUNTIME)/src" "$(RUNTIME)/scripts" "$(RUNTIME)/tests"
-	cp -a "$(SOURCE)/src" "$(RUNTIME)/src"
-	[ -d "$(SOURCE)/scripts" ] && cp -a "$(SOURCE)/scripts" "$(RUNTIME)/scripts"
-	[ -d "$(SOURCE)/tests" ] && cp -a "$(SOURCE)/tests" "$(RUNTIME)/tests"
-	@echo "Done. Verify with 'make verify'"
+smoke-test: candidate-smoke-test  ## Smoke-test the source candidate (legacy target)
 
-verify: ## Check deployed files match source
-	@echo "Verifying pi-vcc deploy..."
-	@diff -q "$(SOURCE)/index.ts" "$(RUNTIME)/index.ts" && \
-	  echo "  index.ts: OK" || echo "  index.ts: MISMATCH"
-	@diff -q "$(SOURCE)/src/tools/recall.ts" "$(RUNTIME)/src/tools/recall.ts" && \
-	  echo "  src/tools/recall.ts: OK" || echo "  src/tools/recall.ts: MISMATCH"
-	@echo "Verify complete"
+runtime-smoke-test:  ## Load the copied runtime extension in a fresh, isolated pi process
+	python3 "$(SMOKE_SCRIPT)" \
+	  --extension "$(RUNTIME)/index.ts" \
+	  --tool vcc_recall \
+	  --timeout "$(SMOKE_TIMEOUT)" \
+	  --prompt 'List your available tools, report that pi-vcc loaded, and stop.'
+
+deploy: ## Safely copy, stamp, verify, and smoke-test the npm location
+	@test -z "$$(git -C "$(SOURCE)" status --porcelain)" || { echo "ERROR: commit source changes before deploying" >&2; git -C "$(SOURCE)" status --short >&2; exit 1; }
+	@test ! -L "$(RUNTIME)" || { echo "ERROR: refusing to deploy through symlink $(RUNTIME)" >&2; exit 1; }
+	@mkdir -p "$(RUNTIME)"
+	@$(MAKE) --no-print-directory candidate-smoke-test
+	@echo "Copying pi-vcc to $(RUNTIME)..."
+	@for file in $(DEPLOY_FILES); do \
+		if [ -f "$(SOURCE)/$$file" ]; then \
+			cp "$(SOURCE)/$$file" "$(RUNTIME)/$$file"; \
+		elif [ -e "$(RUNTIME)/$$file" ]; then \
+			echo "ERROR: source file missing but runtime copy exists: $$file" >&2; exit 1; \
+		fi; \
+	done
+	@for dir in $(DEPLOY_DIRS); do \
+		if [ -d "$(SOURCE)/$$dir" ]; then \
+			mkdir -p "$(RUNTIME)/$$dir"; cp -a "$(SOURCE)/$$dir/." "$(RUNTIME)/$$dir/"; \
+		elif [ -e "$(RUNTIME)/$$dir" ]; then \
+			echo "ERROR: source directory missing but runtime copy exists: $$dir" >&2; exit 1; \
+		fi; \
+	done
+	@printf 'deployed from: %s\nbranch: %s\ncommit: %s\ndeployed at: %s\n\nThis is a deployed artifact. Do not edit files here.\nEdit the source checkout and run `make deploy`.\n' \
+		"$(SOURCE)" "$$(git -C "$(SOURCE)" rev-parse --abbrev-ref HEAD)" "$$(git -C "$(SOURCE)" rev-parse HEAD)" "$$(date '+%Y-%m-%d %H:%M:%S %z')" \
+		> "$(RUNTIME)/.deployed-commit"
+	@$(MAKE) --no-print-directory verify
+	@$(MAKE) --no-print-directory runtime-smoke-test
+	@echo "Deploy complete."
+
+verify: ## Check deployed files, content, and source commit stamp
+	@test -d "$(RUNTIME)" || { echo "ERROR: $(RUNTIME) missing" >&2; exit 1; }
+	@test -f "$(RUNTIME)/.deployed-commit" || { echo "ERROR: no .deployed-commit marker in $(RUNTIME)" >&2; exit 1; }
+	@test "$$(sed -n 's/^commit: //p' "$(RUNTIME)/.deployed-commit")" = "$$(git -C "$(SOURCE)" rev-parse HEAD)" || { echo "ERROR: deployed commit != source HEAD" >&2; exit 1; }
+	@for file in $(DEPLOY_FILES); do \
+		if [ -f "$(SOURCE)/$$file" ]; then \
+			cmp -s "$(SOURCE)/$$file" "$(RUNTIME)/$$file" || { echo "ERROR: deployed file drift: $$file" >&2; exit 1; }; \
+		elif [ -e "$(RUNTIME)/$$file" ]; then \
+			echo "ERROR: runtime has file absent from source: $$file" >&2; exit 1; \
+		fi; \
+	done
+	@for dir in $(DEPLOY_DIRS); do \
+		if [ -d "$(SOURCE)/$$dir" ]; then \
+			diff -qr "$(SOURCE)/$$dir" "$(RUNTIME)/$$dir" >/dev/null || { echo "ERROR: deployed directory drift: $$dir" >&2; exit 1; }; \
+		elif [ -e "$(RUNTIME)/$$dir" ]; then \
+			echo "ERROR: runtime has directory absent from source: $$dir" >&2; exit 1; \
+		fi; \
+	done
+	@echo "OK: $(RUNTIME) matches $(SOURCE) @ $$(git -C "$(SOURCE)" rev-parse --short HEAD)"
+
+deployed-commit:  ## Show which source commit is deployed
+	@cat "$(RUNTIME)/.deployed-commit" 2>/dev/null || echo "no .deployed-commit marker in $(RUNTIME)"
