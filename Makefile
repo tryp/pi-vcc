@@ -22,8 +22,11 @@ PI_AI ?= $(PI_MONO)/node_modules/@earendil-works/pi-ai
 PI_AGENT_CORE ?= $(PI_MONO)/node_modules/@earendil-works/pi-agent-core
 PI_TUI ?= $(PI_MONO)/node_modules/@earendil-works/pi-tui
 
-SOURCE_DIR := $(abspath $(SOURCE))
-RUNTIME_DIR := $(abspath $(RUNTIME))
+# Keep user-provided paths in the environment rather than interpolating them
+# into recipe source. Recipes normalize them after the shell has received the
+# values, preserving whitespace and treating metacharacters as data.
+export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI PI_AGENT_CORE PI_TUI
+
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md
 DEPLOY_DIRS := src scripts tests
 
@@ -33,11 +36,11 @@ link-packages:
 	@mkdir -p node_modules node_modules/@earendil-works node_modules/@mariozechner
 	@rm -rf node_modules/typebox node_modules/@earendil-works/pi-coding-agent node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-agent-core node_modules/@earendil-works/pi-tui node_modules/@mariozechner/pi-coding-agent
 	@ln -sfn /home/dev/.pi/agent/npm/node_modules/typebox node_modules/typebox 2>/dev/null; echo "  [link] typebox"
-	@ln -sfn "$(PI_CODING_AGENT)" node_modules/@earendil-works/pi-coding-agent 2>/dev/null; echo "  [link] @earendil-works/pi-coding-agent"
-	@ln -sfn "$(PI_AI)" node_modules/@earendil-works/pi-ai 2>/dev/null; echo "  [link] @earendil-works/pi-ai"
-	@ln -sfn "$(PI_AGENT_CORE)" node_modules/@earendil-works/pi-agent-core 2>/dev/null; echo "  [link] @earendil-works/pi-agent-core"
-	@ln -sfn "$(PI_TUI)" node_modules/@earendil-works/pi-tui 2>/dev/null; echo "  [link] @earendil-works/pi-tui"
-	@ln -sfn "$(PI_CODING_AGENT)" node_modules/@mariozechner/pi-coding-agent 2>/dev/null; echo "  [link] @mariozechner/pi-coding-agent"
+	@ln -sfn "$${PI_CODING_AGENT}" node_modules/@earendil-works/pi-coding-agent 2>/dev/null; echo "  [link] @earendil-works/pi-coding-agent"
+	@ln -sfn "$${PI_AI}" node_modules/@earendil-works/pi-ai 2>/dev/null; echo "  [link] @earendil-works/pi-ai"
+	@ln -sfn "$${PI_AGENT_CORE}" node_modules/@earendil-works/pi-agent-core 2>/dev/null; echo "  [link] @earendil-works/pi-agent-core"
+	@ln -sfn "$${PI_TUI}" node_modules/@earendil-works/pi-tui 2>/dev/null; echo "  [link] @earendil-works/pi-tui"
+	@ln -sfn "$${PI_CODING_AGENT}" node_modules/@mariozechner/pi-coding-agent 2>/dev/null; echo "  [link] @mariozechner/pi-coding-agent"
 
 BUN ?= bun
 
@@ -50,7 +53,8 @@ test-all: test smoke-test  ## Run all tests
 # symlink in the existing runtime and in the payload, not just the copied file.
 deploy-preflight:
 	@set -eu; \
-		source="$(SOURCE_DIR)"; runtime="$(RUNTIME_DIR)"; \
+		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
+		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
 		die() { echo "ERROR: $$*" >&2; exit 1; }; \
 		reject_symlink_path() { \
 			path="$$1"; \
@@ -102,70 +106,81 @@ deploy-preflight:
 		echo "OK: deploy preflight passed for $$source -> $$runtime"
 
 candidate-smoke-test:  ## Load the source candidate in a fresh, isolated pi process
-	@config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
+	@set -eu; \
+		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
+		config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
 		trap 'rm -rf "$$config_dir"' EXIT INT TERM; \
-		PI_VCC_CONFIG_PATH="$$config_dir/pi-vcc-config.json" PI_TELEMETRY=0 python3 "$(SMOKE_SCRIPT)" \
-		  --extension "$(SOURCE_DIR)/index.ts" \
+		PI_VCC_CONFIG_PATH="$$config_dir/pi-vcc-config.json" PI_TELEMETRY=0 python3 "$${SMOKE_SCRIPT}" \
+		  --extension "$$source/index.ts" \
 		  --tool vcc_recall \
-		  --timeout "$(SMOKE_TIMEOUT)" \
+		  --timeout "$${SMOKE_TIMEOUT}" \
 		  --prompt 'List your available tools, report that pi-vcc loaded, and stop.'
 
 smoke-test: candidate-smoke-test  ## Smoke-test the source candidate (legacy target)
 
 runtime-smoke-test:  ## Load the copied runtime extension in a fresh, isolated pi process
-	@config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
+	@set -eu; \
+		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
+		config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
 		trap 'rm -rf "$$config_dir"' EXIT INT TERM; \
-		PI_VCC_CONFIG_PATH="$$config_dir/pi-vcc-config.json" PI_TELEMETRY=0 python3 "$(SMOKE_SCRIPT)" \
-		  --extension "$(RUNTIME_DIR)/index.ts" \
+		PI_VCC_CONFIG_PATH="$$config_dir/pi-vcc-config.json" PI_TELEMETRY=0 python3 "$${SMOKE_SCRIPT}" \
+		  --extension "$$runtime/index.ts" \
 		  --tool vcc_recall \
-		  --timeout "$(SMOKE_TIMEOUT)" \
+		  --timeout "$${SMOKE_TIMEOUT}" \
 		  --prompt 'List your available tools, report that pi-vcc loaded, and stop.'
 
 deploy: deploy-preflight  ## Safely copy, stamp, verify, and smoke-test the npm runtime
-	@test -z "$$(git -C "$(SOURCE_DIR)" status --porcelain)" || { echo "ERROR: commit source changes before deploying" >&2; git -C "$(SOURCE_DIR)" status --short >&2; exit 1; }
-	@mkdir -p "$(RUNTIME_DIR)"
-	@$(MAKE) --no-print-directory candidate-smoke-test
-	@echo "Copying pi-vcc to $(RUNTIME_DIR)..."
-	@for file in $(DEPLOY_FILES); do \
-		if [ -f "$(SOURCE_DIR)/$$file" ]; then \
-			cp "$(SOURCE_DIR)/$$file" "$(RUNTIME_DIR)/$$file"; \
-		elif [ -e "$(RUNTIME_DIR)/$$file" ]; then \
-			echo "ERROR: source file missing but runtime copy exists: $$file" >&2; exit 1; \
-		fi; \
-	done
-	@for dir in $(DEPLOY_DIRS); do \
-		if [ -d "$(SOURCE_DIR)/$$dir" ]; then \
-			mkdir -p "$(RUNTIME_DIR)/$$dir"; cp -a "$(SOURCE_DIR)/$$dir/." "$(RUNTIME_DIR)/$$dir/"; \
-		elif [ -e "$(RUNTIME_DIR)/$$dir" ]; then \
-			echo "ERROR: source directory missing but runtime copy exists: $$dir" >&2; exit 1; \
-		fi; \
-	done
-	@printf 'deployed from: %s\nbranch: %s\ncommit: %s\ndeployed at: %s\n\nThis is a deployed artifact. Do not edit files here.\nEdit the source checkout and run `make deploy`.\n' \
-		"$(SOURCE_DIR)" "$$(git -C "$(SOURCE_DIR)" rev-parse --abbrev-ref HEAD)" "$$(git -C "$(SOURCE_DIR)" rev-parse HEAD)" "$$(date '+%Y-%m-%d %H:%M:%S %z')" \
-		> "$(RUNTIME_DIR)/.deployed-commit"
-	@$(MAKE) --no-print-directory verify
-	@$(MAKE) --no-print-directory runtime-smoke-test
-	@echo "Deploy complete."
+	@set -eu; \
+		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
+		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
+		test -z "$$(git -C "$$source" status --porcelain)" || { echo "ERROR: commit source changes before deploying" >&2; git -C "$$source" status --short >&2; exit 1; }; \
+		mkdir -p "$$runtime"; \
+		$(MAKE) --no-print-directory candidate-smoke-test; \
+		echo "Copying pi-vcc to $$runtime..."; \
+		for file in $(DEPLOY_FILES); do \
+			if [ -f "$$source/$$file" ]; then \
+				cp "$$source/$$file" "$$runtime/$$file"; \
+			elif [ -e "$$runtime/$$file" ]; then \
+				echo "ERROR: source file missing but runtime copy exists: $$file" >&2; exit 1; \
+			fi; \
+		done; \
+		for dir in $(DEPLOY_DIRS); do \
+			if [ -d "$$source/$$dir" ]; then \
+				mkdir -p "$$runtime/$$dir"; cp -a "$$source/$$dir/." "$$runtime/$$dir/"; \
+			elif [ -e "$$runtime/$$dir" ]; then \
+				echo "ERROR: source directory missing but runtime copy exists: $$dir" >&2; exit 1; \
+			fi; \
+		done; \
+		printf 'deployed from: %s\nbranch: %s\ncommit: %s\ndeployed at: %s\n\nThis is a deployed artifact. Do not edit files here.\nEdit the source checkout and run `make deploy`.\n' \
+			"$$source" "$$(git -C "$$source" rev-parse --abbrev-ref HEAD)" "$$(git -C "$$source" rev-parse HEAD)" "$$(date '+%Y-%m-%d %H:%M:%S %z')" \
+			> "$$runtime/.deployed-commit"; \
+		$(MAKE) --no-print-directory verify; \
+		$(MAKE) --no-print-directory runtime-smoke-test; \
+		echo "Deploy complete."
 
 verify: deploy-preflight  ## Check deployed files, content, and source commit stamp
-	@test -d "$(RUNTIME_DIR)" || { echo "ERROR: $(RUNTIME_DIR) missing" >&2; exit 1; }
-	@test -f "$(RUNTIME_DIR)/.deployed-commit" || { echo "ERROR: no .deployed-commit marker in $(RUNTIME_DIR)" >&2; exit 1; }
-	@test "$$(sed -n 's/^commit: //p' "$(RUNTIME_DIR)/.deployed-commit")" = "$$(git -C "$(SOURCE_DIR)" rev-parse HEAD)" || { echo "ERROR: deployed commit != source HEAD" >&2; exit 1; }
-	@for file in $(DEPLOY_FILES); do \
-		if [ -f "$(SOURCE_DIR)/$$file" ]; then \
-			cmp -s "$(SOURCE_DIR)/$$file" "$(RUNTIME_DIR)/$$file" || { echo "ERROR: deployed file drift: $$file" >&2; exit 1; }; \
-		elif [ -e "$(RUNTIME_DIR)/$$file" ]; then \
-			echo "ERROR: runtime has file absent from source: $$file" >&2; exit 1; \
-		fi; \
-	done
-	@for dir in $(DEPLOY_DIRS); do \
-		if [ -d "$(SOURCE_DIR)/$$dir" ]; then \
-			diff -qr "$(SOURCE_DIR)/$$dir" "$(RUNTIME_DIR)/$$dir" >/dev/null || { echo "ERROR: deployed directory drift: $$dir" >&2; exit 1; }; \
-		elif [ -e "$(RUNTIME_DIR)/$$dir" ]; then \
-			echo "ERROR: runtime has directory absent from source: $$dir" >&2; exit 1; \
-		fi; \
-	done
-	@echo "OK: $(RUNTIME_DIR) matches $(SOURCE_DIR) @ $$(git -C "$(SOURCE_DIR)" rev-parse --short HEAD)"
+	@set -eu; \
+		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
+		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
+		test -d "$$runtime" || { echo "ERROR: $$runtime missing" >&2; exit 1; }; \
+		test -f "$$runtime/.deployed-commit" || { echo "ERROR: no .deployed-commit marker in $$runtime" >&2; exit 1; }; \
+		test "$$(sed -n 's/^commit: //p' "$$runtime/.deployed-commit")" = "$$(git -C "$$source" rev-parse HEAD)" || { echo "ERROR: deployed commit != source HEAD" >&2; exit 1; }; \
+		for file in $(DEPLOY_FILES); do \
+			if [ -f "$$source/$$file" ]; then \
+				cmp -s "$$source/$$file" "$$runtime/$$file" || { echo "ERROR: deployed file drift: $$file" >&2; exit 1; }; \
+			elif [ -e "$$runtime/$$file" ]; then \
+				echo "ERROR: runtime has file absent from source: $$file" >&2; exit 1; \
+			fi; \
+		done; \
+		for dir in $(DEPLOY_DIRS); do \
+			if [ -d "$$source/$$dir" ]; then \
+				diff -qr "$$source/$$dir" "$$runtime/$$dir" >/dev/null || { echo "ERROR: deployed directory drift: $$dir" >&2; exit 1; }; \
+			elif [ -e "$$runtime/$$dir" ]; then \
+				echo "ERROR: runtime has directory absent from source: $$dir" >&2; exit 1; \
+			fi; \
+		done; \
+		echo "OK: $$runtime matches $$source @ $$(git -C "$$source" rev-parse --short HEAD)"
 
 deployed-commit:  ## Show which source commit is deployed
-	@cat "$(RUNTIME_DIR)/.deployed-commit" 2>/dev/null || echo "no .deployed-commit marker in $(RUNTIME_DIR)"
+	@runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
+		cat "$$runtime/.deployed-commit" 2>/dev/null || echo "no .deployed-commit marker in $$runtime"

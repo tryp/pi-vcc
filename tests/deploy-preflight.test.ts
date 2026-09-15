@@ -1,7 +1,7 @@
 import { afterEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -66,6 +66,31 @@ describe("deploy-preflight", () => {
     const result = preflight(source, runtime);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr.toString(), /Git worktree/);
+  });
+
+  test("accepts source and runtime paths containing whitespace", () => {
+    const parent = mkdtempSync(join(tmpdir(), "pi-vcc deploy paths-"));
+    fixtures.push(parent);
+    const source = fixture(parent);
+    const runtime = mkdtempSync(join(parent, "pi-vcc runtime-"));
+    fixtures.push(runtime);
+    const result = preflight(source, runtime);
+    assert.equal(result.status, 0, result.stderr.toString());
+    assert.match(result.stdout.toString(), /deploy preflight passed/);
+  });
+
+  test("does not execute shell metacharacters in path overrides", () => {
+    const marker = join(tmpdir(), `pi-vcc-preflight-injection-${process.pid}`);
+    rmSync(marker, { force: true });
+    const source = `${join(tmpdir(), "pi-vcc nonexistent")}"; touch "${marker}`;
+    const runtime = join(tmpdir(), "pi-vcc runtime");
+    try {
+      const result = preflight(source, runtime);
+      assert.notEqual(result.status, 0);
+      assert.equal(existsSync(marker), false, result.stdout.toString() + result.stderr.toString());
+    } finally {
+      rmSync(marker, { force: true });
+    }
   });
 
   test("rejects nested source and runtime symlinks, including the marker", () => {
