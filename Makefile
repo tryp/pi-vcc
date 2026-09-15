@@ -30,7 +30,14 @@ export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI P
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md
 DEPLOY_DIRS := src scripts tests
 
-.PHONY: deploy deploy-preflight verify deployed-commit link-packages test test-all smoke-test candidate-smoke-test runtime-smoke-test
+.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit link-packages test test-all smoke-test candidate-smoke-test runtime-smoke-test
+
+# Reject bytes that POSIX command substitution would otherwise strip before
+# path normalization. Keep this as a dependency of every target that consumes
+# an override, so validation happens before that target's first substitution.
+path-overrides-preflight:
+	@python3 -c 'import sys; names = ("SOURCE", "RUNTIME", "SMOKE_SCRIPT", "PI_MONO", "PI_CODING_AGENT", "PI_AI", "PI_AGENT_CORE", "PI_TUI"); bad = next(((name, value) for name, value in zip(names, sys.argv[1:]) if "\n" in value or "\r" in value), None); sys.stderr.write(f"ERROR: {bad[0]} path override contains newline or carriage return\n") if bad else None; sys.exit(1 if bad else 0)' \
+		"$${SOURCE}" "$${RUNTIME}" "$${SMOKE_SCRIPT}" "$${PI_MONO}" "$${PI_CODING_AGENT}" "$${PI_AI}" "$${PI_AGENT_CORE}" "$${PI_TUI}"
 
 link-packages:
 	@mkdir -p node_modules node_modules/@earendil-works node_modules/@mariozechner
@@ -51,7 +58,7 @@ test-all: test smoke-test  ## Run all tests
 
 # Validate before any deploy-side effect. This intentionally rejects every
 # symlink in the existing runtime and in the payload, not just the copied file.
-deploy-preflight:
+deploy-preflight: path-overrides-preflight
 	@set -eu; \
 		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
 		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
@@ -105,7 +112,7 @@ deploy-preflight:
 		done; \
 		echo "OK: deploy preflight passed for $$source -> $$runtime"
 
-candidate-smoke-test:  ## Load the source candidate in a fresh, isolated pi process
+candidate-smoke-test: path-overrides-preflight  ## Load the source candidate in a fresh, isolated pi process
 	@set -eu; \
 		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
 		config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
@@ -118,7 +125,7 @@ candidate-smoke-test:  ## Load the source candidate in a fresh, isolated pi proc
 
 smoke-test: candidate-smoke-test  ## Smoke-test the source candidate (legacy target)
 
-runtime-smoke-test:  ## Load the copied runtime extension in a fresh, isolated pi process
+runtime-smoke-test: path-overrides-preflight  ## Load the copied runtime extension in a fresh, isolated pi process
 	@set -eu; \
 		runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
 		config_dir="$$(mktemp -d "$${TMPDIR:-/tmp}/pi-vcc-smoke-config.XXXXXX")"; \
@@ -181,6 +188,6 @@ verify: deploy-preflight  ## Check deployed files, content, and source commit st
 		done; \
 		echo "OK: $$runtime matches $$source @ $$(git -C "$$source" rev-parse --short HEAD)"
 
-deployed-commit:  ## Show which source commit is deployed
+deployed-commit: path-overrides-preflight  ## Show which source commit is deployed
 	@runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
 		cat "$$runtime/.deployed-commit" 2>/dev/null || echo "no .deployed-commit marker in $$runtime"

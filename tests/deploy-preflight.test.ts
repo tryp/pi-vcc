@@ -79,6 +79,20 @@ describe("deploy-preflight", () => {
     assert.match(result.stdout.toString(), /deploy preflight passed/);
   });
 
+  test("rejects source path overrides containing newline or carriage return", () => {
+    for (const suffix of ["\n", "\r"]) {
+      const source = fixture();
+      const renamedSource = `${source}${suffix}`;
+      renameSync(source, renamedSource);
+      fixtures[fixtures.length - 1] = renamedSource;
+      const runtime = mkdtempSync(join(tmpdir(), "pi-vcc-deploy-runtime-"));
+      fixtures.push(runtime);
+      const result = preflight(renamedSource, runtime);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr.toString(), /SOURCE path override contains newline or carriage return/);
+    }
+  });
+
   test("does not execute shell metacharacters in path overrides", () => {
     const marker = join(tmpdir(), `pi-vcc-preflight-injection-${process.pid}`);
     rmSync(marker, { force: true });
