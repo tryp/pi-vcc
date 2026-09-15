@@ -28,6 +28,13 @@ function preflight(source: string, runtime: string) {
   );
 }
 
+function preflightFromEnvironment(source: string, runtime: string) {
+  return spawnSync("make", ["--no-print-directory", "deploy-preflight"], {
+    cwd: repo,
+    env: { ...process.env, SOURCE: source, RUNTIME: runtime },
+  });
+}
+
 afterEach(() => {
   for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -77,6 +84,30 @@ describe("deploy-preflight", () => {
     const result = preflight(source, runtime);
     assert.equal(result.status, 0, result.stderr.toString());
     assert.match(result.stdout.toString(), /deploy preflight passed/);
+  });
+
+  test("preserves dollar signs and Make metacharacters in environment path overrides", () => {
+    const parent = mkdtempSync(join(tmpdir(), "pi-vcc make paths-"));
+    fixtures.push(parent);
+    const marker = join(repo, `tmp-pi-vcc-env-injection-${process.pid}`);
+    rmSync(marker, { force: true });
+    const source = fixture(parent);
+    const sourceWithSpecials = `${source}$#:=%; touch ${marker.slice(repo.length + 1)};?*;`;
+    renameSync(source, sourceWithSpecials);
+    fixtures[fixtures.length - 1] = sourceWithSpecials;
+    const runtime = mkdtempSync(join(parent, "pi-vcc runtime-"));
+    const runtimeWithSpecials = `${runtime}$#:=%;?*;`;
+    renameSync(runtime, runtimeWithSpecials);
+    fixtures.push(runtimeWithSpecials);
+
+    try {
+      const result = preflightFromEnvironment(sourceWithSpecials, runtimeWithSpecials);
+      assert.equal(result.status, 0, result.stderr.toString());
+      assert.match(result.stdout.toString(), /deploy preflight passed/);
+      assert.equal(existsSync(marker), false, result.stdout.toString() + result.stderr.toString());
+    } finally {
+      rmSync(marker, { force: true });
+    }
   });
 
   test("rejects source path overrides containing newline or carriage return", () => {

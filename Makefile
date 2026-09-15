@@ -24,7 +24,12 @@ PI_TUI ?= $(PI_MONO)/node_modules/@earendil-works/pi-tui
 
 # Keep user-provided paths in the environment rather than interpolating them
 # into recipe source. Recipes normalize them after the shell has received the
-# values, preserving whitespace and treating metacharacters as data.
+# values, preserving whitespace and treating metacharacters as data. For paths
+# containing `$` or other GNU Make syntax, pass SOURCE/RUNTIME (and any other
+# path override) in the environment, not as a command-line assignment:
+#   SOURCE='/path/with/$/literal' RUNTIME='/path/to/runtime' make deploy-preflight
+# Command-line assignments remain supported for ordinary paths, but GNU Make
+# expands `$` in those assignments before recipes can receive it.
 export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI PI_AGENT_CORE PI_TUI
 
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md

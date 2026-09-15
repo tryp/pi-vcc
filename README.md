@@ -164,6 +164,24 @@ Config lives at `~/.pi/agent/pi-vcc-config.json` (auto-scaffolded on first load 
 - **`continueAfterThresholdCompact`** *(default `true`)*: when `true`, pi-vcc asks the agent to continue after a successful automatic compaction (threshold or overflow), avoiding a UX cliff where the agent stops after compaction instead of continuing the task.
 - **`debug`** *(default `false`)*: when `true`, each compaction writes detailed info to `/tmp/pi-vcc-debug.json` — message counts, cut boundary, summary preview, sections, token estimate calibration.
 
+## Make path overrides
+
+The development `Makefile` accepts `SOURCE`, `RUNTIME`, and related path
+variables as command-line overrides for ordinary paths. GNU Make expands `$`
+in command-line assignments before recipes run, so paths containing `$` or
+other GNU Make syntax must be supplied through the environment instead:
+
+```bash
+SOURCE='/path/with/$/literal#and%make:specials' \
+RUNTIME='/path/to/runtime' \
+make deploy-preflight
+```
+
+Recipes receive these environment values directly and quote them at every
+filesystem boundary; metacharacters remain path data and are not evaluated as
+shell syntax. Newline and carriage-return path values are rejected during
+preflight because shell command substitution cannot preserve them safely.
+
 ## Benchmarks
 
 Local benchmarks / research comparing the ranked brief against the shipped pi-vcc 0.3.18 baseline (recall, fact-density, precision, size) live in [`benchmarks/README.md`](./benchmarks/README.md).
