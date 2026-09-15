@@ -61,7 +61,20 @@ deploy-preflight:
 				path="$$next"; \
 			done; \
 		}; \
+		path_is_ancestor() { \
+			ancestor="$$1"; child="$$2"; \
+			[ "$$ancestor" = "$$child" ] && return 0; \
+			if [ "$$ancestor" = / ]; then \
+				case "$$child" in /*) return 0;; esac; \
+			else \
+				case "$$child" in "$$ancestor"/*) return 0;; esac; \
+			fi; \
+			return 1; \
+		}; \
 		[ "$$source" != "$$runtime" ] || die "source and runtime must be different paths"; \
+		if path_is_ancestor "$$source" "$$runtime" || path_is_ancestor "$$runtime" "$$source"; then \
+			die "source and runtime paths must not overlap: $$source and $$runtime"; \
+		fi; \
 		reject_symlink_path "$$source"; \
 		reject_symlink_path "$$runtime"; \
 		[ -d "$$source" ] || die "source is not a directory: $$source"; \

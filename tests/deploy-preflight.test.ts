@@ -2,15 +2,15 @@ import { afterEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtures: string[] = [];
 
-function fixture(): string {
-  const source = mkdtempSync(join(tmpdir(), "pi-vcc-deploy-source-"));
+function fixture(parent = tmpdir()): string {
+  const source = mkdtempSync(join(parent, "pi-vcc-deploy-source-"));
   fixtures.push(source);
   for (const dir of ["src", "scripts", "tests"]) mkdirSync(join(source, dir));
   for (const file of ["index.ts", "package.json", "tsconfig.json", "README.md"])
@@ -38,6 +38,24 @@ describe("deploy-preflight", () => {
     const result = preflight(source, source);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr.toString(), /different paths/);
+  });
+
+  test("rejects a runtime descendant of the source after path normalization", () => {
+    const source = fixture();
+    const relativeSource = relative(repo, source);
+    const runtime = `${relativeSource}/nested/../runtime`;
+    const result = preflight(relativeSource, runtime);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr.toString(), /paths must not overlap/);
+  });
+
+  test("rejects a source descendant of the runtime", () => {
+    const runtime = mkdtempSync(join(tmpdir(), "pi-vcc-deploy-runtime-"));
+    fixtures.push(runtime);
+    const source = fixture(runtime);
+    const result = preflight(source, `${runtime}/./`);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr.toString(), /paths must not overlap/);
   });
 
   test("rejects a source outside Git", () => {
