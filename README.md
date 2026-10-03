@@ -6,6 +6,41 @@ Algorithmic conversation compactor for [Pi](https://github.com/badlogic/pi-mono)
 
 Inspired by [VCC](https://github.com/lllyasviel/VCC) **(View-oriented Conversation Compiler)**.
 
+## This checkout is our fork (read first)
+
+This is a local fork of `@sting8k/pi-vcc`, maintained for our own use. It is the
+copy that actually runs here: the pi settings `packages` entry lists this source
+path and `pi list` resolves it to itself, so pi loads this tree **in place**.
+
+- **Edit here.** Changes take effect on the next pi start; no deploy step is
+  involved.
+- **Never install the npm package.** `pi install npm:@sting8k/pi-vcc` would add a
+  second source and let upstream's published code shadow this checkout. Verify
+  the resolved path with `make check-loaded`.
+- **`make deploy` is optional.** It publishes a verified copy to the npm runtime
+  path for installations configured to load that copy; this installation does
+  not load it. `make verify` checks a published copy against this source, and
+  the copy's `.deployed-commit` marker says not to edit it.
+
+### Fork policy
+
+Our local forks prioritize our own use. We do **not** upstream our changes:
+they are written against our environment, settings, and workflows, and many are
+not appropriate for wide consumption (deploy hardening tied to our paths,
+compaction defaults tuned to our own `maxContextTokens`, interfaces that assume
+our other local extensions). Upstream is a source we occasionally rebase onto,
+not a target we contribute back to.
+
+Concretely:
+
+- Do not open pull requests for this fork's commits, and do not treat "upstream
+  already has it" as a reason to drop local behavior.
+- Do not pull upstream into `master` without rebasing deliberately and
+  re-running `make test-all`; upstream moves can silently undo local fixes (see
+  the history around `fix(rebase): preserve pi-vcc behavior on upstream v0.7.0`).
+- When local behavior and upstream behavior conflict, local wins. Record why in
+  the commit message.
+
 ## Demo
 
 ![pi-vcc demo](./demo.gif)
@@ -38,6 +73,10 @@ Inspired by [VCC](https://github.com/lllyasviel/VCC) **(View-oriented Conversati
 - **`/pi-vcc`** — manual compaction on demand
 
 ## Install
+
+For other installations only. This checkout is **not** installed this way — see
+"This checkout is our fork" above; installing the npm package here would shadow
+it with upstream's published code.
 
 ```bash
 pi install npm:@sting8k/pi-vcc
