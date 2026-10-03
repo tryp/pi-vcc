@@ -17,10 +17,46 @@ SOURCE ?= $(CURDIR)
 SMOKE_SCRIPT ?= $(HOME)/src/pi-session-analysis/scripts/predeploy_smoke.py
 SMOKE_TIMEOUT ?= 90
 PI_MONO ?= /home/dev/src/pi-mono
-PI_CODING_AGENT ?= $(PI_MONO)/node_modules/@earendil-works/pi-coding-agent
-PI_AI ?= $(PI_MONO)/node_modules/@earendil-works/pi-ai
-PI_AGENT_CORE ?= $(PI_MONO)/node_modules/@earendil-works/pi-agent-core
-PI_TUI ?= $(PI_MONO)/node_modules/@earendil-works/pi-tui
+
+# pi-mono packages linked into node_modules so tests resolve their imports.
+#
+# These use ordinary `PI_*` names, and the pi harness exports some of the same
+# names for its own purposes (it sets PI_CODING_AGENT=true). An override may
+# legitimately arrive through the environment - that is the documented transport
+# for paths containing `$` - so an inherited value normally wins over the
+# default. A non-path value then becomes an `ln -sfn` target, and `ln -sfn`
+# happily creates a symlink to the literal string "true", silently corrupting
+# node_modules for every later target that resolves imports through it.
+#
+# Resolve each path here instead: honour an override only when it names a
+# directory, otherwise report it and use the default. link-packages-preflight
+# still requires the resolved paths to exist, so a genuinely missing dependency
+# fails loudly rather than being papered over.
+dep_path = $(if $(1),$(if $(wildcard $(1)/.),$(1),$(2)),$(2))
+warn_ignored_dep = $(if $(filter-out $(3),$(2)),$(warning ignoring $(1)=$(2): not a directory; using $(3)))
+
+PI_CODING_AGENT_DEFAULT := $(PI_MONO)/node_modules/@earendil-works/pi-coding-agent
+PI_AI_DEFAULT := $(PI_MONO)/node_modules/@earendil-works/pi-ai
+PI_AGENT_CORE_DEFAULT := $(PI_MONO)/node_modules/@earendil-works/pi-agent-core
+PI_TUI_DEFAULT := $(PI_MONO)/node_modules/@earendil-works/pi-tui
+
+# Captured before resolution so an ignored override can be reported. A
+# command-line assignment cannot be replaced by the makefile, so such a value
+# reaches the recipes unchanged and is rejected by link-packages-preflight.
+PI_CODING_AGENT_OVERRIDE := $(PI_CODING_AGENT)
+PI_AI_OVERRIDE := $(PI_AI)
+PI_AGENT_CORE_OVERRIDE := $(PI_AGENT_CORE)
+PI_TUI_OVERRIDE := $(PI_TUI)
+
+PI_CODING_AGENT := $(call dep_path,$(PI_CODING_AGENT_OVERRIDE),$(PI_CODING_AGENT_DEFAULT))
+PI_AI := $(call dep_path,$(PI_AI_OVERRIDE),$(PI_AI_DEFAULT))
+PI_AGENT_CORE := $(call dep_path,$(PI_AGENT_CORE_OVERRIDE),$(PI_AGENT_CORE_DEFAULT))
+PI_TUI := $(call dep_path,$(PI_TUI_OVERRIDE),$(PI_TUI_DEFAULT))
+
+$(call warn_ignored_dep,PI_CODING_AGENT,$(PI_CODING_AGENT_OVERRIDE),$(PI_CODING_AGENT))
+$(call warn_ignored_dep,PI_AI,$(PI_AI_OVERRIDE),$(PI_AI))
+$(call warn_ignored_dep,PI_AGENT_CORE,$(PI_AGENT_CORE_OVERRIDE),$(PI_AGENT_CORE))
+$(call warn_ignored_dep,PI_TUI,$(PI_TUI_OVERRIDE),$(PI_TUI))
 
 # Keep user-provided paths in the environment rather than interpolating them
 # into recipe source. Recipes normalize them after the shell has received the
@@ -35,7 +71,7 @@ export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI P
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md
 DEPLOY_DIRS := src scripts tests
 
-.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit link-packages test test-all smoke-test candidate-smoke-test runtime-smoke-test
+.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit link-packages link-packages-preflight test test-all smoke-test candidate-smoke-test runtime-smoke-test
 
 # Reject bytes that POSIX command substitution would otherwise strip before
 # path normalization. Keep this as a dependency of every target that consumes
@@ -44,7 +80,16 @@ path-overrides-preflight:
 	@python3 -c 'import sys; names = ("SOURCE", "RUNTIME", "SMOKE_SCRIPT", "PI_MONO", "PI_CODING_AGENT", "PI_AI", "PI_AGENT_CORE", "PI_TUI"); bad = next(((name, value) for name, value in zip(names, sys.argv[1:]) if "\n" in value or "\r" in value), None); sys.stderr.write(f"ERROR: {bad[0]} path override contains newline or carriage return\n") if bad else None; sys.exit(1 if bad else 0)' \
 		"$${SOURCE}" "$${RUNTIME}" "$${SMOKE_SCRIPT}" "$${PI_MONO}" "$${PI_CODING_AGENT}" "$${PI_AI}" "$${PI_AGENT_CORE}" "$${PI_TUI}"
 
-link-packages:
+# Require the resolved dependency paths to be real directories. Resolution above
+# already discards a non-directory environment value, so reaching this error
+# means the pi-mono checkout itself is missing or was overridden on the command
+# line with a non-path value. Failing here keeps `ln -sfn` from writing a
+# symlink to a bogus target.
+link-packages-preflight: path-overrides-preflight
+	@python3 -c 'import os, sys; names = ("PI_CODING_AGENT", "PI_AI", "PI_AGENT_CORE", "PI_TUI"); pairs = tuple(zip(names, sys.argv[1:5])); bad = next(((n, v) for n, v in pairs if not os.path.isdir(v)), None); sys.stderr.write(f"ERROR: {bad[0]}={bad[1]!r} is not a directory; check the pi-mono checkout (PI_MONO={sys.argv[5]!r}) or the override passed on the command line\n") if bad else None; sys.exit(1 if bad else 0)' \
+		"$${PI_CODING_AGENT}" "$${PI_AI}" "$${PI_AGENT_CORE}" "$${PI_TUI}" "$${PI_MONO}"
+
+link-packages: link-packages-preflight
 	@mkdir -p node_modules node_modules/@earendil-works node_modules/@mariozechner
 	@rm -rf node_modules/typebox node_modules/@earendil-works/pi-coding-agent node_modules/@earendil-works/pi-ai node_modules/@earendil-works/pi-agent-core node_modules/@earendil-works/pi-tui node_modules/@mariozechner/pi-coding-agent
 	@ln -sfn /home/dev/.pi/agent/npm/node_modules/typebox node_modules/typebox 2>/dev/null; echo "  [link] typebox"
