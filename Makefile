@@ -71,7 +71,7 @@ export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI P
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md
 DEPLOY_DIRS := src scripts tests
 
-.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit link-packages link-packages-preflight test test-all smoke-test candidate-smoke-test runtime-smoke-test
+.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit check-loaded link-packages link-packages-preflight test test-all smoke-test candidate-smoke-test runtime-smoke-test
 
 # Reject bytes that POSIX command substitution would otherwise strip before
 # path normalization. Keep this as a dependency of every target that consumes
@@ -241,3 +241,23 @@ verify: deploy-preflight  ## Check deployed files, content, and source commit st
 deployed-commit: path-overrides-preflight  ## Show which source commit is deployed
 	@runtime="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${RUNTIME}")"; \
 		cat "$$runtime/.deployed-commit" 2>/dev/null || echo "no .deployed-commit marker in $$runtime"
+
+# pi loads this checkout in place: the user settings `packages` list the source
+# path, and `pi list` resolves it to itself, so the source tree IS the live
+# extension and `make deploy` is optional (it publishes a copy only for
+# installations configured to load the npm runtime). This target turns that
+# into something checkable rather than a convention. It fails when pi resolves
+# pi-vcc somewhere else, and when the npm package is registered again, since
+# upstream's published code would then shadow this checkout.
+check-loaded: path-overrides-preflight  ## Verify pi loads this checkout in place
+	@set -eu; \
+		source="$$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$${SOURCE}")"; \
+		listed="$$(pi list 2>/dev/null || true)"; \
+		resolved="$$(printf '%s\n' "$$listed" | awk -v want="$$source" 'index($$0, want) == 3 { getline; gsub(/^[[:space:]]+/, ""); print; exit }')"; \
+		test -n "$$resolved" || { echo "ERROR: pi does not list $$source as a package (run: pi install $$source)" >&2; exit 1; }; \
+		test "$$resolved" = "$$source" || { echo "ERROR: pi loads pi-vcc from '$$resolved', not '$$source'" >&2; exit 1; }; \
+		if printf '%s\n' "$$listed" | grep -q 'npm:@sting8k/pi-vcc'; then \
+			echo "ERROR: npm:@sting8k/pi-vcc is registered in pi settings; remove it so upstream cannot shadow this checkout" >&2; \
+			exit 1; \
+		fi; \
+		echo "OK: pi loads pi-vcc in place from $$source"
