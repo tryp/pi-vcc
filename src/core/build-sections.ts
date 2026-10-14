@@ -6,6 +6,7 @@ import { extractFiles } from "../extract/files";
 import { extractPreferences, dedupPreferencesAgainstGoals } from "../extract/preferences";
 import { extractCommits, formatCommits } from "../extract/commits";
 import { buildBriefSections, stringifyBrief } from "./brief";
+import { describeCustom, labelToken } from "./provenance";
 
 export interface BuildSectionsInput {
   blocks: NormalizedBlock[];
@@ -36,7 +37,7 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
       continue;
     }
 
-    if (b.kind === "assistant" || b.kind === "user") {
+    if (b.kind === "assistant" || b.kind === "user" || b.kind === "custom") {
       for (const line of nonEmptyLines(b.text)) {
         if (!BLOCKER_RE.test(line)) continue;
         if (line.length < 15) continue;
@@ -45,7 +46,12 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
         if (/^\s*\(/.test(line)) continue;
         // Require sentence-like start: capital letter, code identifier, or quote
         if (!/^\s*["'`*_]?[A-Z`]/.test(line)) continue;
-        const clipped = b.kind === "user" ? `[user] ${clipSentence(line, 150)}` : clipSentence(line, 150);
+        // Attribute to whoever actually spoke: a subagent reporting a blocker
+        // is outstanding context, but it is not the user's blocker.
+        const speaker = b.kind === "user"
+          ? "[user]"
+          : b.kind === "custom" ? labelToken(describeCustom(b.customType, b.details, b.text)) : "";
+        const clipped = speaker ? `${speaker} ${clipSentence(line, 150)}` : clipSentence(line, 150);
         if (!items.includes(clipped)) items.push(clipped);
         break;
       }

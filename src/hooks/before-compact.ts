@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { compileRanked } from "../core/summarize";
+import type { NormalizableMessage } from "../core/normalize";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
@@ -694,7 +694,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     pendingFollowUpPrompt = followUpPrompt;
     const agentMessages = ownCut.messages;
     const firstKeptEntryId = ownCut.firstKeptEntryId;
-    const messages = convertToLlm(agentMessages);
+    // Deliberately NOT convertToLlm(): that flattens every extension-injected
+    // message (subagent intercom, job completion, LSP auto-diag) to role
+    // "user" and drops customType, so the summary attributed all of them to
+    // the human. normalize() understands the session shapes directly.
 
     // Count kept messages and estimate tokens
     const keptIdx = (branchEntries as any[]).findIndex((e: any) => e.id === firstKeptEntryId);
@@ -743,7 +746,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const RANKED_BRIEF_CEILING_TOKENS = 2000;
     const RANKED_BRIEF_TOKENS_PER_BLOCK = 15;
     const summary = compileRanked({
-      messages,
+      messages: agentMessages as NormalizableMessage[],
       previousSummary: preparation.previousSummary,
       fileOps: {
         readFiles: [...preparation.fileOps.read],
@@ -773,8 +776,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       compaction: { reason, willRetry },
       messagesToSummarize: agentMessages.length,
       messagesPreviewHead: agentMessages.slice(0, 3).map((m: any) => ({ role: m.role, preview: previewContent(m.content) })),
-      messagesPreviewTail: agentMessages.slice(-3).map((m: any) => ({ role: m.role, preview: previewContent(m.content) })),
-      convertedMessages: messages.length,
+      messagesPreviewTail: agentMessages.slice(-3).map((m: any) => ({ role: m.role, customType: m.customType, preview: previewContent(m.content) })),
       firstKeptEntryId,
       cutWindow,
       tokensBefore: preparation.tokensBefore,

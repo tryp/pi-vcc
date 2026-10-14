@@ -84,9 +84,62 @@ describe("normalize", () => {
     ]);
   });
 
-  it("skips truly unknown message roles gracefully", () => {
+  it("keeps a custom message as provenance instead of dropping or relabeling it", () => {
+    // Previously normalize() ignored role "custom" entirely. That was only
+    // safe because the hook pre-flattened via convertToLlm, which turned every
+    // extension message into a user message. Dropping them is wrong for the
+    // same reason mislabeling them was: the content is real session content.
     const custom = { role: "custom", content: "hello" } as any;
-    expect(normalize([custom])).toEqual([]);
+    expect(normalize([custom])).toEqual([
+      { kind: "custom", customType: "unknown", text: "hello", sourceIndex: 0 },
+    ]);
+  });
+
+  it("preserves customType and details for a known producer", () => {
+    const custom = {
+      role: "custom",
+      customType: "subagent_supervisor_request",
+      content: "Subagent needs a supervisor decision.",
+      details: { agent: "worker", expectsReply: true, requestId: "abc" },
+    } as any;
+    expect(normalize([custom])).toEqual([
+      {
+        kind: "custom",
+        customType: "subagent_supervisor_request",
+        text: "Subagent needs a supervisor decision.",
+        details: { agent: "worker", expectsReply: true, requestId: "abc" },
+        sourceIndex: 0,
+      },
+    ]);
+  });
+
+  it("normalizes branch and compaction summaries rather than losing them", () => {
+    // convertToLlm wrapped these in <summary> tags; skipping them here would
+    // silently drop a branch summary that used to reach the brief.
+    expect(normalize([{ role: "branchSummary", summary: "we tried X" } as any])).toEqual([
+      {
+        kind: "custom",
+        customType: "pi-branch-summary",
+        text: expect.stringContaining("we tried X"),
+        sourceIndex: 0,
+      },
+    ]);
+    expect(normalize([{ role: "compactionSummary", summary: "earlier" } as any])).toEqual([
+      {
+        kind: "custom",
+        customType: "pi-compaction-summary",
+        text: expect.stringContaining("earlier"),
+        sourceIndex: 0,
+      },
+    ]);
+  });
+
+  it("skips truly unknown message roles gracefully", () => {
+    expect(normalize([{ role: "mystery", content: "hello" } as any])).toEqual([]);
+  });
+
+  it("skips an empty summary message", () => {
+    expect(normalize([{ role: "branchSummary", summary: "" } as any])).toEqual([]);
   });
 });
 

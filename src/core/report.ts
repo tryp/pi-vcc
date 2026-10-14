@@ -1,13 +1,21 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { buildSections } from "./build-sections";
 import { clip } from "./content";
-import { normalize } from "./normalize";
+import { normalize, type NormalizableMessage } from "./normalize";
 import { renderMessage } from "./render-entries";
 import { searchEntries } from "./search-entries";
 import { type CompileInput, compile } from "./summarize";
 import { estimateTokensFromChars } from "./token-estimate";
 
 const SECTION_HEADERS = ["Session Goal", "Files And Changes", "Commits", "Outstanding Context"];
+
+/**
+ * `renderMessage` and `searchEntries` read pi-ai provider fields directly.
+ * Every caller of this report feeds it `loadAllMessages` output, which only
+ * admits `type: "message"` entries and so is always provider-shaped; the cast
+ * keeps that assumption in one place instead of widening the pi-ai helpers.
+ */
+const asProviderMessages = (messages: NormalizableMessage[]): Message[] => messages as Message[];
 
 interface RoleCounts {
   user: number;
@@ -61,7 +69,7 @@ export interface CompactReport {
   };
 }
 
-const countRoles = (messages: Message[]): RoleCounts => {
+const countRoles = (messages: NormalizableMessage[]): RoleCounts => {
   const counts: RoleCounts = { user: 0, assistant: 0, toolResult: 0 };
   for (const msg of messages) {
     if (msg.role === "user") counts.user += 1;
@@ -71,7 +79,7 @@ const countRoles = (messages: Message[]): RoleCounts => {
   return counts;
 };
 
-const countBlocks = (messages: Message[]): BlockCounts => {
+const countBlocks = (messages: NormalizableMessage[]): BlockCounts => {
   const counts: BlockCounts = {
     user: 0,
     assistant: 0,
@@ -89,12 +97,12 @@ const countBlocks = (messages: Message[]): BlockCounts => {
   return counts;
 };
 
-const inputCharsOf = (messages: Message[]): number =>
-  messages
+const inputCharsOf = (messages: NormalizableMessage[]): number =>
+  asProviderMessages(messages)
     .map((msg, index) => renderMessage(msg, index, true).summary.length)
     .reduce((sum, len) => sum + len, 0);
 
-const topFilesOf = (messages: Message[]): string[] => {
+const topFilesOf = (messages: NormalizableMessage[]): string[] => {
   const files = new Set<string>();
   for (const block of normalize(messages)) {
     if (block.kind === "tool_call") {
@@ -107,8 +115,8 @@ const topFilesOf = (messages: Message[]): string[] => {
   return [...files].slice(0, 10);
 };
 
-const previewOf = (messages: Message[], edgeCount = 3): string => {
-  const rendered = messages.map((msg, index) => renderMessage(msg, index));
+const previewOf = (messages: NormalizableMessage[], edgeCount = 3): string => {
+  const rendered = asProviderMessages(messages).map((msg, index) => renderMessage(msg, index));
   if (rendered.length === 0) return "(empty)";
   if (rendered.length <= edgeCount * 2) {
     return rendered
@@ -154,7 +162,7 @@ const matchesQuery = (text: string, query: string): boolean => {
     .every((term) => hay.includes(term));
 };
 
-const probesOf = (messages: Message[], summary: string): RecallProbe[] => {
+const probesOf = (messages: NormalizableMessage[], summary: string): RecallProbe[] => {
   const blocks = normalize(messages);
   const data = buildSections({ blocks });
 
@@ -175,7 +183,7 @@ const probesOf = (messages: Message[], summary: string): RecallProbe[] => {
     { label: "problem", text: data.outstandingContext[0] ?? "" },
   ];
 
-  const rendered = messages.map((msg, index) => renderMessage(msg, index));
+  const rendered = asProviderMessages(messages).map((msg, index) => renderMessage(msg, index));
 
   return rawProbes
     .map(({ label, text }) => {
@@ -187,7 +195,7 @@ const probesOf = (messages: Message[], summary: string): RecallProbe[] => {
         sourceText,
         query,
         summaryMentioned: matchesQuery(summary, query),
-        recallHits: searchEntries(rendered, messages, query).length,
+        recallHits: searchEntries(rendered, asProviderMessages(messages), query).length,
       };
     })
     .filter((probe): probe is RecallProbe => probe !== null);

@@ -35,6 +35,16 @@ export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
       out.push({ kind: "user", text: cleaned });
       continue;
     }
+    if (b.kind === "custom") {
+      // Same noise stripping as a user turn, but the block keeps its kind:
+      // rewriting it to `user` here is how provenance got lost in the first
+      // place (see normalize.ts).
+      if (isNoiseUserBlock(b.text)) continue;
+      const cleaned = cleanUserText(b.text);
+      if (!cleaned) continue;
+      out.push({ ...b, text: cleaned });
+      continue;
+    }
     out.push(b);
   }
   return out;

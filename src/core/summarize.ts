@@ -1,13 +1,18 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { FileOps } from "../types";
-import { normalize } from "./normalize";
+import { normalize, type NormalizableMessage } from "./normalize";
 import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
 import { formatSummary, capBrief, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
 import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
 
 export interface CompileInput {
-  messages: Message[];
+  /**
+   * Provider messages (`Message[]`) or raw session messages. The wider form is
+   * what preserves extension provenance: a `custom` message keeps its
+   * customType instead of arriving pre-flattened to `role: "user"`.
+   */
+  messages: (Message | NormalizableMessage)[];
   previousSummary?: string;
   fileOps?: FileOps;
 }

@@ -113,6 +113,9 @@ const scoreBlock = (
   if (block.kind === "user") add(ranked, 18, "user-turn");
   if (block.kind === "assistant") add(ranked, 10, "assistant-context");
   if (block.kind === "tool_result") add(ranked, 1, "tool-result-low-value");
+  // Real content (a subagent's finding, a job's result) but not a turn
+  // boundary — it must not outrank the human turn it is answering.
+  if (block.kind === "custom") add(ranked, 8, "extension-notification");
 
   if (block.kind === "tool_call") {
     const command = bashCommandFromBlock(block);
@@ -180,13 +183,22 @@ const nextNonToolResult = (ranked: RankedBlock[], index: number): NormalizedBloc
   return undefined;
 };
 
+/**
+ * A segment ends where a new turn begins. An extension-injected message is a
+ * turn boundary too: the assistant asked the supervisor or a subagent, and
+ * this is the answer, so the assistant text before it is a conclusion rather
+ * than mid-thought narration.
+ */
+const isTurnBoundary = (block: NormalizedBlock | undefined): boolean =>
+  block?.kind === "user" || block?.kind === "custom";
+
 const boostSegmentClosingAssistants = (ranked: RankedBlock[]) => {
   for (let i = 0; i < ranked.length; i++) {
     const current = ranked[i];
     if (current.block.kind !== "assistant") continue;
     if (current.block.text.trim().length < MIN_SEGMENT_CLOSING_ASSISTANT_CHARS) continue;
     const next = nextNonToolResult(ranked, i);
-    if (!next || next.kind === "user") {
+    if (!next || isTurnBoundary(next)) {
       add(current, 14, "segment-closing-assistant");
     }
   }

@@ -71,7 +71,7 @@ export SOURCE RUNTIME SMOKE_SCRIPT SMOKE_TIMEOUT PI_MONO PI_CODING_AGENT PI_AI P
 DEPLOY_FILES := index.ts package.json tsconfig.json README.md
 DEPLOY_DIRS := src scripts tests
 
-.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit check-loaded link-packages link-packages-preflight test test-all smoke-test candidate-smoke-test runtime-smoke-test
+.PHONY: deploy deploy-preflight path-overrides-preflight verify deployed-commit check-loaded link-packages link-packages-preflight test test-suite test-all smoke-test candidate-smoke-test runtime-smoke-test mutcheck-provenance e2e-provenance
 
 # Reject bytes that POSIX command substitution would otherwise strip before
 # path normalization. Keep this as a dependency of every target that consumes
@@ -103,6 +103,41 @@ BUN ?= bun
 
 test: link-packages  ## Run interface tests
 	$(BUN) test tests/interface.test.ts
+
+# The full suite covers provenance, compaction, ranking, and recall. `make test`
+# runs only the interface file, so use this before deploying a summarizer change.
+test-suite: link-packages  ## Run the whole test suite
+	$(BUN) test tests/
+
+# Revert each provenance guarantee in a throwaway copy and require a test to
+# fail. A green suite proves nothing on its own: a mutation that survives means
+# nothing observes the behaviour it was supposed to protect. A mutation that
+# does not apply, or does not compile, is a SETUP-ERROR rather than a catch --
+# otherwise the harness reports coverage it does not have.
+mutcheck-provenance: link-packages  ## Revert each provenance guarantee; all must fail
+	python3 scripts/mutcheck-provenance.py
+
+E2E_DIR ?= $(CURDIR)/tmp/e2e-provenance
+E2E_SESSIONS ?= $(E2E_DIR)/sessions
+
+# Drive a synthetic session_before_compact through the hook that a REAL pi
+# process registered, against payloads copied from session files. Costs one pi
+# startup; catches the hook flattening its input (a stub cannot).
+e2e-provenance: link-packages  ## Load the candidate in real pi and check the emitted summary
+	@set -eu; \
+	rm -rf "$(E2E_DIR)"; mkdir -p "$(E2E_SESSIONS)"; \
+	config="$(E2E_DIR)/pi-vcc-config.json"; \
+	PI_VCC_CONFIG_PATH="$$config" PI_SERVE_PORT= PI_TELEMETRY=0 \
+	  pi --session-dir "$(E2E_SESSIONS)" --no-session --no-extensions \
+	     -e "scripts/e2e-provenance.ts" -p "run the provenance check" </dev/null 2>&1 \
+	  | tee "$(E2E_DIR)/pi.log" \
+	  | sed -n '/---- summary emitted/,/E2E_PROVENANCE_/p'; \
+	if ! grep -q "E2E_PROVENANCE_PASS" "$(E2E_DIR)/pi.log"; then \
+	  echo "ERROR: e2e-provenance did not pass; see $(E2E_DIR)/pi.log" >&2; \
+	  grep "E2E_PROVENANCE_FAIL\|- " "$(E2E_DIR)/pi.log" >&2 || true; \
+	  exit 1; \
+	fi; \
+	echo "e2e-provenance: pass"
 
 test-all: test smoke-test  ## Run all tests
 

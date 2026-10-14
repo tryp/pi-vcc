@@ -12,6 +12,24 @@ const fixtures: string[] = [];
 const PACKAGES = ["pi-coding-agent", "pi-ai", "pi-agent-core", "pi-tui"];
 
 /**
+ * Environment keys the repo Makefile exports to every recipe
+ * (`export ... PI_MONO PI_CODING_AGENT PI_AI PI_AGENT_CORE PI_TUI`).
+ *
+ * Because of that export, running the suite from any make recipe — e.g.
+ * `make test-suite` — leaks resolved package paths into `process.env`, and the
+ * child `make` in the fixture then sees a directory override for PI_AI that
+ * outranks the fixture's own PI_MONO. This test's whole subject is which
+ * override wins, so it has to control inheritance rather than spread it.
+ */
+const LEAKED_OVERRIDES = ["PI_MONO", "PI_CODING_AGENT", "PI_AI", "PI_AGENT_CORE", "PI_TUI"];
+
+function cleanEnv(env: Record<string, string>): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of LEAKED_OVERRIDES) delete base[key];
+  return { ...base, ...env };
+}
+
+/**
  * A throwaway checkout carrying the real Makefile, plus a fake pi-mono that
  * provides the packages link-packages resolves. Keeping both in a temp dir
  * makes the test independent of the host's pi-mono checkout and safe to mutate.
@@ -30,7 +48,7 @@ function fixture(): { root: string; piMono: string } {
 function linkPackages(root: string, env: Record<string, string>) {
   return spawnSync("make", ["--no-print-directory", "link-packages"], {
     cwd: root,
-    env: { ...process.env, ...env },
+    env: cleanEnv(env),
     encoding: "utf8",
   });
 }

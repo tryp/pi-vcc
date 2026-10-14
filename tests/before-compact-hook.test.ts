@@ -864,4 +864,56 @@ describe("registerBeforeCompactHook: custom_message reaches the summarizer", () 
     expect(snapshot.usedOwnCut).toBe(true);
     expect(JSON.stringify(snapshot)).toContain("INJECTED_CTX_9999");
   });
+
+  test("the emitted summary attributes an extension message to its producer", () => {
+    // This is the hook-level guarantee. It used to call convertToLlm() first,
+    // which turned every custom_message into role "user" and threw away
+    // customType, so `memory-inject` rendered as [user] INJECTED_CTX_9999.
+    setConfig({ debug: false, overrideDefaultCompaction: false });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "Investigate the stale retention anchor."),
+      msg("a1", "assistant", "Reading compaction.ts now."),
+      custom("c1", "subagent_supervisor_request", "Subagent needs a supervisor decision. Context.md is absent.", {
+        details: { agent: "worker", expectsReply: true, requestId: "044e8bf9-1234-5678-9abc-000000000000" },
+      }),
+      msg("a2", "assistant", "Tracing the compaction path."),
+      msg("u2", "user", "Now write the regression test."),
+      msg("a3", "assistant", "Test added and passing."),
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
+    expect(result.cancel).toBeUndefined();
+    const summary: string = result.compaction.summary;
+    // Known producer -> labelled by its source, with the reply route.
+    expect(summary).toContain("[subagent:worker]");
+    expect(summary).toContain("reply owed");
+    expect(summary).toContain("Subagent needs a supervisor decision");
+    // The ask is not the session goal. Slice to the brief separator: a fixture
+    // this small produces no [Files And Changes], so indexing that header would
+    // run the slice to the end of the summary and assert nothing.
+    const goalStart = summary.indexOf("[Session Goal]");
+    const goal = goalStart < 0 ? "" : summary.slice(goalStart, summary.indexOf("\n\n---\n\n", goalStart));
+    expect(goal).toContain("Investigate the stale retention anchor");
+    expect(goal).not.toContain("Subagent needs a supervisor decision");
+  });
+
+  test("a branch_summary still reaches the brief after dropping convertToLlm", () => {
+    // Removing convertToLlm() also removed its branchSummary -> <summary>
+    // wrapping. normalize() re-implements it; without that, a branch summary
+    // would silently vanish from the brief.
+    setConfig({ debug: false, overrideDefaultCompaction: false });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      branchSummary("b1", "BRANCH_MARKER_4242 was explored and rejected"),
+      msg("u1", "user", "go"),
+      msg("a1", "assistant", "reply"),
+      msg("u2", "user", "next"),
+      msg("a2", "assistant", "done"),
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction.summary).toContain("BRANCH_MARKER_4242");
+  });
 });

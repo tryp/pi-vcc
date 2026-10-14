@@ -2,6 +2,7 @@ import type { NormalizedBlock } from "../types";
 import { clip } from "./content";
 import { extractPath } from "./tool-args";
 import { collapseSkillText } from "./skill-collapse";
+import { describeCustom, labelToken } from "./provenance";
 
 const TRUNCATE_USER = 512;
 const TRUNCATE_ASSISTANT = 400;
@@ -243,7 +244,28 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         lastHeader = "[user]";
         break;
       }
+      case "custom": {
+        // Extension-injected: a subagent, a peer over intercom, a background
+        // job, or an LSP diagnostic. Never rendered as `[user]` — the whole
+        // point is that the model can tell who actually spoke.
+        if (isNoiseUser(b.text)) break;
+        const label = describeCustom(b.customType, b.details, b.text);
+        const header = labelToken(label);
+        if (label.route) push(header, label.route);
+        const text = truncateTokens(b.text, TRUNCATE_USER);
+        if (text) {
+          const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
+          pushText(header, text, ref);
+        }
+        lastHeader = header;
+        break;
+      }
       case "bash": {
+        // `!` commands are the human's own action, so they stay under [user].
+        // The output is deliberately NOT rendered: brief.test.ts pins that, and
+        // the brief is budget-bounded with the full message reachable through
+        // vcc_recall. (convertToLlm's bashExecutionToText used to include it,
+        // because it flattened bashExecution to a plain user message.)
         const cmd = compressBash(b.command);
         const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
         if (cmd) {
