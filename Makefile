@@ -17,6 +17,8 @@ SOURCE ?= $(CURDIR)
 SMOKE_SCRIPT ?= $(HOME)/src/pi-session-analysis/scripts/predeploy_smoke.py
 SMOKE_TIMEOUT ?= 90
 PI_MONO ?= /home/dev/src/pi-mono
+PI_SESSION_ANALYSIS_DIR ?= $(HOME)/src/pi-session-analysis
+RECORD_DEPLOY_ARGS ?=
 
 # pi-mono packages linked into node_modules so tests resolve their imports.
 #
@@ -248,6 +250,11 @@ deploy: deploy-preflight  ## Safely copy, stamp, verify, and smoke-test the npm 
 			> "$$runtime/.deployed-commit"; \
 		$(MAKE) --no-print-directory verify; \
 		$(MAKE) --no-print-directory runtime-smoke-test; \
+		if [ -x "$(PI_SESSION_ANALYSIS_DIR)/scripts/record-deploy" ]; then \
+			"$(PI_SESSION_ANALYSIS_DIR)/scripts/record-deploy" $(RECORD_DEPLOY_ARGS); \
+		else \
+			echo "Skipping deploy ledger recording: recorder not found at $(PI_SESSION_ANALYSIS_DIR)/scripts/record-deploy."; \
+		fi; \
 		echo "Deploy complete."
 
 verify: deploy-preflight  ## Check deployed files, content, and source commit stamp
