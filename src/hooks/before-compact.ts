@@ -698,12 +698,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // context window and records _lastPreSendCompactionLength only after messages
     // are replaced, so canceling leaves the next submit eligible to retry. As the
     // window grows, the summarized prefix reaches 10 messages and the floor
-    // self-heals into fewer, larger compactions rather than livelocking. Overflow
-    // compactions bypass this floor as the recovery safety net if a turn reaches
-    // the hard limit first. Manual compactions still serve explicit needs; an
-    // explicit keep:0 is always honored.
+    // self-heals into fewer, larger compactions rather than livelocking. Recovery
+    // has two entry paths: post-response overflow arrives as reason="overflow",
+    // while pre-send context-guard recovery arrives as reason="threshold" with
+    // willRetry=true. Never apply the floor to either recovery path: canceling the
+    // latter makes pi report failed context-guard recovery and kills the turn.
+    // Manual compactions still serve explicit needs; explicit keep:0 is honored.
     if (
-      ownCut.ok && reason === "threshold" && ownCut.messages.length < MIN_COMPACTION_SOURCE_MESSAGES &&
+      ownCut.ok && reason === "threshold" && !willRetry && ownCut.messages.length < MIN_COMPACTION_SOURCE_MESSAGES &&
       !(keepUserTurnsExplicit && keepUserTurns === 0)
     ) {
       const skippedKeptIdx = ownCut.compactAll

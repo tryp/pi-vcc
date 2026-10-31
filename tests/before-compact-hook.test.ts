@@ -827,6 +827,19 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     });
   });
 
+  test("pre-send context-guard recovery compacts despite a short source prefix", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    const event = makeEvent(entries, undefined, { reason: "threshold", willRetry: true });
+    event.preparation.tokensBefore = 156_671;
+    const result = invokeBefore(event);
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction).toBeDefined();
+    expect(result.compaction.details.reason).toBe("threshold");
+  });
+
   test("overflow compaction bypasses the source-message floor", () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore } = createMockPi();
