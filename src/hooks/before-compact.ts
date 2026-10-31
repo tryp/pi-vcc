@@ -29,8 +29,10 @@ export interface CompactionStats {
   willRetry?: boolean;
 }
 
-export type BudgetCutKind = "no_anchor" | "oversized_tail";
+export type BudgetCutKind = "no_anchor" | "no_anchor_inflight" | "no_anchor_textonly" | "no_anchor_idless" | "oversized_tail" | "explicit_keep";
 export const OVERSIZED_TAIL_FACTOR = 2.5;
+/** The measured 1–2 and 3–9 source-message buckets together account for 47.4% of compactions. */
+export const MIN_COMPACTION_SOURCE_MESSAGES = 10;
 
 let lastStats: CompactionStats | null = null;
 let lastCompactFollowedError = false;
@@ -92,7 +94,7 @@ const formatTokens = (n: number): string => {
 
 export const formatCompactionStats = (stats: CompactionStats): string => {
   if (stats.budgetCut) {
-    const reason = stats.budgetCut === "no_anchor" ? "no user anchor" : "oversized tail";
+    const reason = stats.budgetCut.startsWith("no_anchor") ? "no user anchor" : stats.budgetCut === "explicit_keep" ? "explicit keep budget" : "oversized tail";
     return `pi-vcc: kept ~${formatTokens(stats.keptTokensEst)} tok tail (mid-turn cut, ${reason}), summarized ${stats.summarized}.`;
   }
   const notes: string[] = [`summarized ${stats.summarized}`];
@@ -395,10 +397,9 @@ export function buildOwnCut(
   };
 }
 
-// Token-budget tail cut: rescue default-path sessions when the user-turn
-// anchored tail is absent (autonomous: no user boundary in the live window)
-// or oversized (a single giant last user turn). Cuts at the nearest valid
-// non-toolResult boundary, mirroring pi-core's findCutPoint.
+// Find a budget crossing and prefer a user anchor at or after it. If the active
+// window has no such anchor, the caller may retain only a complete in-flight
+// tool pair; arbitrary assistant text is already represented by the summary.
 export const findBudgetCutIndex = (
   live: EntryWithMessage[],
   maxTokens: number,
@@ -414,23 +415,70 @@ export const findBudgetCutIndex = (
     }
   }
   if (crossed < 0) return -1;
-  // Snap forward off any toolResult to the next valid boundary.
-  for (let j = Math.max(crossed, 1); j < live.length; j++) {
-    if (live[j].message.role !== "toolResult") return j;
+  const start = Math.max(crossed, 1);
+  for (let i = start; i < live.length; i++) {
+    if (live[i].message.role === "user") return i;
+  }
+  for (let i = start; i < live.length; i++) {
+    if (live[i].message.role !== "toolResult") return i;
   }
   return -1;
+};
+
+const tailTokensFrom = (live: EntryWithMessage[], idx: number, charsPerToken?: number): number => {
+  let tokens = 0;
+  for (let i = idx; i < live.length; i++) {
+    tokens += estimateMessageContentTokens(live[i].message.content, charsPerToken);
+  }
+  return tokens;
+};
+
+type InFlightPairState = "matched" | "idless" | "none";
+
+const inFlightToolPairStateAt = (live: EntryWithMessage[], idx: number): InFlightPairState => {
+  const assistant = live[idx]?.message;
+  if (assistant?.role !== "assistant" || !Array.isArray(assistant.content)) return "none";
+  const calls = assistant.content.filter((part: any) => part?.type === "toolCall" || part?.type === "tool_use");
+  if (calls.length === 0) return "none";
+  let idless = false;
+  for (const { message } of live.slice(idx + 1)) {
+    if (message.role !== "toolResult") continue;
+    const resultId = (message as any).toolCallId ?? (message as any).toolUseId;
+    for (const call of calls as any[]) {
+      if (!resultId || !call.id) {
+        idless = true;
+      } else if (resultId === call.id) {
+        return "matched";
+      }
+    }
+  }
+  return idless ? "idless" : "none";
 };
 
 export const applyTailBudget = (
   branchEntries: any[],
   cut: OwnCutResult,
-  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number } = {},
+  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number; explicitKeep?: boolean } = {},
 ): OwnCutResult => {
   if (!cut.ok) return cut;
   const maxTokens = opts.maxTokens ?? MAX_SMART_TAIL_TOKENS;
   const factor = opts.oversizedFactor ?? OVERSIZED_TAIL_FACTOR;
+  const cap = maxTokens * factor;
   const live = collectLiveMessages(branchEntries);
+  if (cut.compactAll && cut.requestedKeepUserTurns === 0 && !cut.keepFallbackToCompactAll) return cut;
+  if (cut.compactAll && tailTokensFrom(live, 0, opts.charsPerToken) <= maxTokens) return cut;
 
+  const compactAllResult = (budgetCut: BudgetCutKind): OwnCutResult => ({
+    ok: true,
+    messages: live.map((m) => m.message),
+    firstKeptEntryId: "",
+    compactAll: true,
+    keptUserTurns: 0,
+    totalUserTurns: live.filter((m) => m.message.role === "user").length,
+    requestedKeepUserTurns: cut.requestedKeepUserTurns,
+    keepFallbackToCompactAll: true,
+    budgetCut,
+  });
   const budgetResult = (idx: number, budgetCut: BudgetCutKind): OwnCutResult => ({
     ok: true,
     messages: live.slice(0, idx).map((m) => m.message),
@@ -443,26 +491,45 @@ export const applyTailBudget = (
     budgetCut,
   });
 
-  // Case A: no user anchor → compact-all. Re-cut to a token budget unless the
-  // compact-all came from explicit keep:0 (which must be respected absolutely).
-  if (cut.compactAll) {
-    if (!cut.keepFallbackToCompactAll) return cut;
-    const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
-    if (idx < 0) return cut;
-    return budgetResult(idx, "no_anchor");
+  const tailStart = cut.compactAll ? 0 : cut.messages.length;
+  const currentTail = cut.compactAll ? Number.POSITIVE_INFINITY : tailTokensFrom(live, tailStart, opts.charsPerToken);
+  if (!cut.compactAll && currentTail <= cap) return cut;
+
+  const firstCandidate = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
+  if (firstCandidate < 0) return compactAllResult(opts.explicitKeep ? "explicit_keep" : "oversized_tail");
+  const hasUserAnchor = live.slice(firstCandidate).some(({ message }) => message.role === "user");
+  const candidateStart = cut.compactAll ? firstCandidate : Math.max(firstCandidate, tailStart + 1);
+  let sawIdlessToolPair = false;
+  let sawOversizedInFlightPair = false;
+  for (let idx = candidateStart; idx < live.length; idx++) {
+    if (live[idx].message.role === "toolResult") continue;
+    if (hasUserAnchor) {
+      if (live[idx].message.role !== "user") continue;
+    } else {
+      const pairState = inFlightToolPairStateAt(live, idx);
+      if (pairState === "idless") sawIdlessToolPair = true;
+      if (pairState !== "matched") continue;
+    }
+    if (tailTokensFrom(live, idx, opts.charsPerToken) > cap) {
+      if (!hasUserAnchor && inFlightToolPairStateAt(live, idx) === "matched") sawOversizedInFlightPair = true;
+      continue;
+    }
+    if (tailTokensFrom(live, idx, opts.charsPerToken) > cap) continue;
+    const kind: BudgetCutKind = opts.explicitKeep
+      ? "explicit_keep"
+      : cut.compactAll
+        ? (hasUserAnchor ? "no_anchor" : "no_anchor_inflight")
+        : "oversized_tail";
+    return budgetResult(idx, kind);
   }
 
-  // Case B: oversized user-boundary tail. Only re-cut when the kept tail exceeds
-  // maxTokens * factor (tolerance zone below is unchanged).
-  const tailStart = cut.messages.length; // equals the cut index in the live window
-  let tailTokens = 0;
-  for (let i = tailStart; i < live.length; i++) {
-    tailTokens += estimateMessageContentTokens(live[i].message.content, opts.charsPerToken);
-  }
-  if (tailTokens <= maxTokens * factor) return cut;
-  const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
-  if (idx <= tailStart) return cut;
-  return budgetResult(idx, "oversized_tail");
+  // If a valid in-flight pair alone exceeds the tail cap, deliberately summarize
+  // it rather than retaining an over-budget tail. If IDs are missing, count that
+  // uncertainty separately and likewise refuse to guess that the pair is intact.
+  const fallbackKind: BudgetCutKind = cut.compactAll && !hasUserAnchor
+    ? sawIdlessToolPair ? "no_anchor_idless" : sawOversizedInFlightPair ? "oversized_tail" : "no_anchor_textonly"
+    : opts.explicitKeep ? "explicit_keep" : "oversized_tail";
+  return compactAllResult(fallbackKind);
 };
 
 // ── smart keep-tail: boost default keep when tail is small ──
@@ -615,11 +682,53 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
     };
     let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, fileOps);
-    // Default path only: rescue autonomous / oversized-tail sessions with a
-    // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
-    if (ownCut.ok && !keepUserTurnsExplicit) {
-      ownCut = applyTailBudget(branchEntries as any[], ownCut, { charsPerToken: tokenEstimate.charsPerToken });
+    // Bound every retained tail, including explicit keep:N. Explicit keep:0 is
+    // the user's deliberate compact-all request and remains an exact no-op.
+    if (ownCut.ok) {
+      ownCut = applyTailBudget(branchEntries as any[], ownCut, {
+        charsPerToken: tokenEstimate.charsPerToken,
+        explicitKeep: keepUserTurnsExplicit,
+      });
     }
+
+    // For threshold compactions, the measured 1–2 and 3–9 source-message
+    // buckets together make up 47.4% of events. Don't pay for a summary and
+    // prompt rewrite that covers fewer than 10 messages; cancellation lets the
+    // current turn finish. Pi core triggers threshold compaction at 90% of the
+    // context window and records _lastPreSendCompactionLength only after messages
+    // are replaced, so canceling leaves the next submit eligible to retry. As the
+    // window grows, the summarized prefix reaches 10 messages and the floor
+    // self-heals into fewer, larger compactions rather than livelocking. Overflow
+    // compactions bypass this floor as the recovery safety net if a turn reaches
+    // the hard limit first. Manual compactions still serve explicit needs; an
+    // explicit keep:0 is always honored.
+    if (
+      ownCut.ok && reason === "threshold" && ownCut.messages.length < MIN_COMPACTION_SOURCE_MESSAGES &&
+      !(keepUserTurnsExplicit && keepUserTurns === 0)
+    ) {
+      const skippedKeptIdx = ownCut.compactAll
+        ? -1
+        : (branchEntries as any[]).findIndex((e: any) => e.id === ownCut.firstKeptEntryId);
+      const skippedKeptChars = skippedKeptIdx < 0
+        ? 0
+        : (branchEntries as any[]).slice(skippedKeptIdx).filter((e: any) => e.type === "message")
+            .reduce((sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content), 0);
+      const skipped = {
+        reason: "source_message_floor",
+        sourceMessageCount: ownCut.messages.length,
+        minimumSourceMessageCount: MIN_COMPACTION_SOURCE_MESSAGES,
+        keptTokensEst: estimateTokensFromChars(skippedKeptChars, tokenEstimate.charsPerToken),
+        budgetCut: ownCut.budgetCut,
+        tokensBefore: preparation.tokensBefore,
+        compactionReason: reason,
+      };
+      try { pi.appendEntry("pi-vcc-compaction-skipped", skipped); } catch {}
+      try { ctx?.ui?.notify?.(`pi-vcc: skipped compaction (${skipped.sourceMessageCount} source messages; minimum ${MIN_COMPACTION_SOURCE_MESSAGES}).`, "info"); } catch {}
+      dbg(settings, { skippedCompaction: skipped });
+      pendingFollowUpPrompt = null;
+      return { cancel: true };
+    }
+
     if (!ownCut.ok) {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
       const lastCompIdx = lastComp ? (branchEntries as any[]).indexOf(lastComp) : -1;
@@ -794,6 +903,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       previousSummaryUsed: Boolean(preparation.previousSummary),
       reason,
       willRetry,
+      keptTokensEst: lastStats.keptTokensEst,
+      budgetCut: lastStats.budgetCut,
     };
 
     lastCompactWasPiVcc = isPiVcc;

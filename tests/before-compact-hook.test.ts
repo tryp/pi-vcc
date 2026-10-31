@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } fr
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, MAX_SMART_TAIL_TOKENS, OVERSIZED_TAIL_FACTOR } from "../src/hooks/before-compact";
+import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, MAX_SMART_TAIL_TOKENS, OVERSIZED_TAIL_FACTOR, MIN_COMPACTION_SOURCE_MESSAGES } from "../src/hooks/before-compact";
 
 let tmpDir: string;
 let CONFIG_PATH: string;
@@ -637,6 +637,49 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     expect((102_000 + 1_000) / 4).toBeLessThanOrEqual(MAX_SMART_TAIL_TOKENS * OVERSIZED_TAIL_FACTOR);
   });
 
+  test("missing tool-call ids refuse an in-flight retention and record the uncertainty", () => {
+    const entries = [
+      msg("u1", "user", "go"),
+      {
+        id: "a1",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: "x".repeat(1_200) }] },
+      },
+      { id: "t1", type: "message", message: { role: "toolResult", content: "r".repeat(100) } },
+    ];
+    const cut = buildOwnCut(entries, 1);
+    if (!cut.ok) return;
+
+    const result = applyTailBudget(entries, cut, { charsPerToken: 4, maxTokens: 100 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.compactAll).toBe(true);
+    expect(result.firstKeptEntryId).toBe("");
+    expect(result.budgetCut).toBe("no_anchor_idless");
+  });
+
+  test("an in-flight pair over the cap is deliberately summarized, not retained over budget", () => {
+    const entries = [
+      msg("u1", "user", "go"),
+      {
+        id: "a1",
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "call-live", name: "bash", arguments: "x".repeat(1_200) }] },
+      },
+      { id: "t1", type: "message", message: { role: "toolResult", toolCallId: "call-live", content: "r".repeat(100) } },
+    ];
+    const cut = buildOwnCut(entries, 1);
+    if (!cut.ok) return;
+
+    const result = applyTailBudget(entries, cut, { charsPerToken: 4, maxTokens: 100 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The pair is in the summarized prefix; preserving it in the tail would break the cap.
+    expect(result.compactAll).toBe(true);
+    expect(result.firstKeptEntryId).toBe("");
+    expect(result.budgetCut).toBe("oversized_tail");
+  });
+
   test("Case A small window: everything < budget → unchanged compact-all fallback", () => {
     const entries = [
       msg("u1", "user", "go"),
@@ -688,11 +731,11 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     const cut = buildOwnCut(entries, 1);
     if (!cut.ok) return;
     const result = applyTailBudget(entries, cut, { charsPerToken: 4, maxTokens: 35_000 });
-    expect(result).toBe(cut); // 37.5k tail is under the 42k factor cap
+    expect(result).toBe(cut); // 37.5k tail is under the unchanged 87.5k factor cap
     if (!result.ok) return;
     expect(result.budgetCut).toBeUndefined();
     expect(result.firstKeptEntryId).toBe("u2");
-    expect(37_500).toBeLessThanOrEqual(35_000 * OVERSIZED_TAIL_FACTOR);
+    expect(37_500).toBeLessThanOrEqual(35_000 * OVERSIZED_TAIL_FACTOR); // 87.5k cap; factor retained pending corpus measurement
   });
 
   test("toolResult snap: no unpaired toolResult is retained in a no-anchor tail", () => {
@@ -784,6 +827,35 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     });
   });
 
+  test("overflow compaction bypasses the source-message floor", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = Array.from({ length: 12 }, (_, i) => msg(`m${i}`, i % 2 === 0 ? "user" : "assistant", "work"));
+    const event = makeEvent(entries, undefined, { reason: "overflow", willRetry: true });
+    event.preparation.tokensBefore = 156_671;
+    const result = invokeBefore(event);
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction).toBeDefined();
+    expect(result.compaction.details.reason).toBe("overflow");
+  });
+
+  test("a second threshold invocation compacts once its summarized prefix reaches ten messages", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const shortEvent = makeEvent([msg("u1", "user"), msg("a1", "assistant")], undefined, { reason: "threshold", willRetry: false });
+    expect(invokeBefore(shortEvent)).toEqual({ cancel: true });
+
+    const entries = Array.from({ length: 20 }, (_, i) => msg(`m${i}`, i % 2 === 0 ? "user" : "assistant", "x".repeat(110_000)));
+    const secondEvent = makeEvent(entries, undefined, { reason: "threshold", willRetry: false });
+    secondEvent.preparation.tokensBefore = 156_671;
+    const result = invokeBefore(secondEvent);
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction).toBeDefined();
+    expect(result.compaction.details.sourceMessageCount).toBeGreaterThanOrEqual(MIN_COMPACTION_SOURCE_MESSAGES);
+  });
+
   test("Case A text-only no-anchor path compacts all and records its budget path", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
     const { pi, invokeBefore } = createMockPi();
@@ -824,7 +896,7 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       msg("u1", "user", "one"),
       msg("a1", "assistant", "reply"),
       msg("u2", "user", "two"),
-      msg("a2", "assistant", "x".repeat(300_000)),
+      msg("a2", "assistant", "x".repeat(400_000)), // force a cut above the unchanged 2.5x cap
       msg("u3", "user", "three"),
       msg("a3", "assistant", "reply three"),
     ];
