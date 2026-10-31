@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } fr
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget } from "../src/hooks/before-compact";
+import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, MAX_SMART_TAIL_TOKENS, OVERSIZED_TAIL_FACTOR } from "../src/hooks/before-compact";
 
 let tmpDir: string;
 let CONFIG_PATH: string;
@@ -27,6 +27,7 @@ function createMockPi() {
   const notifyCalls: Array<{ msg: string; level: string }> = [];
   const userMessages: Array<string | unknown[]> = [];
   const customMessages: Array<{ message: any; options: any }> = [];
+  const appendedEntries: Array<{ customType: string; data: any }> = [];
   const ctx = {
     hasUI: true,
     ui: {
@@ -48,6 +49,9 @@ function createMockPi() {
       sendMessage: (message: any, options: any) => {
         customMessages.push({ message, options });
       },
+      appendEntry: (customType: string, data: any) => {
+        appendedEntries.push({ customType, data });
+      },
     } as any,
     invokeBefore: (event: any) => beforeHandler!(event, ctx),
     invokeCompact: (event: any) => compactHandler!(event, ctx),
@@ -55,6 +59,7 @@ function createMockPi() {
     notifyCalls,
     userMessages,
     customMessages,
+    appendedEntries,
   };
 }
  
@@ -82,6 +87,10 @@ const msg = (id: string, role: "user" | "assistant" | "toolResult", content = "x
   type: "message",
   message: { role, content },
 });
+const olderContext = () => Array.from({ length: 5 }, (_, i) => [
+  msg(`old-u${i}`, "user", "earlier prompt"),
+  msg(`old-a${i}`, "assistant", "earlier answer"),
+]).flat();
 const comp = (id: string, firstKeptEntryId?: string) => ({ id, type: "compaction", firstKeptEntryId });
 const custom = (id: string, customType: string, content: string | unknown[], extra: Record<string, unknown> = {}) => ({ id, type: "custom_message", customType, content, display: false, timestamp: "2026-01-01T00:00:00.000Z", ...extra });
 const branchSummary = (id: string, summary: string, fromId = "f1") => ({ id, type: "branch_summary", summary, fromId, timestamp: "2026-01-01T00:00:00.000Z" });
@@ -107,13 +116,13 @@ describe("registerBeforeCompactHook: cancel paths", () => {
     expect(notifyCalls[0].msg).toContain("Too few messages");
   });
  
-  test("/pi-vcc with no user message compacts all instead of cancelling", () => {
+  test("explicit keep:0 with no user message compacts all despite the source-message floor", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
     const { pi, invokeBefore, notifyCalls } = createMockPi();
     registerBeforeCompactHook(pi);
- 
+
     const entries = [msg("m1", "assistant"), msg("m2", "assistant"), msg("m3", "assistant")];
-    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
+    const result = invokeBefore(makeEvent(entries, `${PI_VCC_COMPACT_INSTRUCTION} keep:0`));
     // No longer cancels — compacts all to recover from context overflow
     expect(result.cancel).toBeUndefined();
     expect(result.compaction).toBeDefined();
@@ -233,11 +242,11 @@ describe("registerBeforeCompactHook: compact-all path", () => {
   });
 
   test("threshold override still compacts and records reason metadata", () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
+    setConfig({ debug: false, overrideDefaultCompaction: true, smartKeepTail: false });
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
 
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    const entries = [...olderContext(), msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
     const result = invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
 
     expect(result.compaction).toBeDefined();
@@ -247,11 +256,11 @@ describe("registerBeforeCompactHook: compact-all path", () => {
   });
 
   test("threshold compact auto-continues by default with hidden custom message", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
+    setConfig({ debug: false, overrideDefaultCompaction: true, smartKeepTail: false });
     const { pi, invokeBefore, invokeCompact, customMessages, userMessages } = createMockPi();
     registerBeforeCompactHook(pi);
 
-    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    const entries = [...olderContext(), msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
     invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
     await invokeCompact({ type: "session_compact", fromExtension: true, reason: "threshold", willRetry: false });
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -571,7 +580,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
 describe("applyTailBudget: token-budget tail cut (default path)", () => {
   const big = (n: number) => "x".repeat(n);
 
-  test("Case A: no user anchor + oversized live window → non-compact-all budget cut (no_anchor)", () => {
+  test("Case A text-only tail with no user anchor stays compact-all", () => {
     const entries = [
       msg("u1", "user", "go"),
       msg("a1", "assistant", "tool"),
@@ -586,12 +595,46 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.compactAll).toBe(false);
-    expect(result.firstKeptEntryId).toBe("a2");
-    expect(result.firstKeptEntryId).not.toBe("");
-    expect(result.budgetCut).toBe("no_anchor");
-    const keptFirst = entries.find((e: any) => e.id === result.firstKeptEntryId)!;
-    expect(keptFirst.message.role).not.toBe("toolResult");
+    expect(result.compactAll).toBe(true);
+    expect(result.firstKeptEntryId).toBe("");
+    expect(result.budgetCut).toBe("no_anchor_textonly");
+    expect(0).toBeLessThanOrEqual(MAX_SMART_TAIL_TOKENS * OVERSIZED_TAIL_FACTOR);
+  });
+
+  test("Case A without a user anchor retains only an in-flight tool_use/tool_result pair", () => {
+    const entries = [
+      msg("u1", "user", "go"),
+      msg("a0", "assistant", "before tool call"),
+      {
+        id: "a1",
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call-live", name: "bash", arguments: { command: "x".repeat(102_000) } }],
+        },
+      },
+      {
+        id: "t1",
+        type: "message",
+        message: { role: "toolResult", toolCallId: "call-live", content: "r".repeat(1_000) },
+      },
+    ];
+    const cut = buildOwnCut(entries, 1);
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    expect(cut.compactAll).toBe(true);
+
+    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.firstKeptEntryId).toBe("a1");
+    expect(result.budgetCut).toBe("no_anchor_inflight");
+    const kept = entries.slice(entries.findIndex((e: any) => e.id === result.firstKeptEntryId));
+    expect(kept.map((e: any) => e.id)).toEqual(["a1", "t1"]);
+    expect(kept[0].message.role).toBe("assistant");
+    expect(kept[0].message.content.some((part: any) => part.type === "toolCall")).toBe(true);
+    expect(kept[1].message.role).toBe("toolResult");
+    expect((102_000 + 1_000) / 4).toBeLessThanOrEqual(MAX_SMART_TAIL_TOKENS * OVERSIZED_TAIL_FACTOR);
   });
 
   test("Case A small window: everything < budget → unchanged compact-all fallback", () => {
@@ -611,7 +654,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     expect(result.budgetCut).toBeUndefined();
   });
 
-  test("Case B: oversized tail (>62.5k tok) re-cuts inside the last turn, not at toolResult", () => {
+  test("Case B: oversized unanchored text tail compacts all rather than retaining a mid-turn fragment", () => {
     const entries = [
       msg("u1", "user", "one"),
       msg("a1", "assistant", "reply"),
@@ -628,13 +671,12 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
     if (!result.ok) return;
     expect(result.budgetCut).toBe("oversized_tail");
-    expect(result.compactAll).toBe(false);
-    expect(result.firstKeptEntryId).toBe("a2"); // cut landed inside the last turn
-    const keptFirst = entries.find((e: any) => e.id === result.firstKeptEntryId)!;
-    expect(keptFirst.message.role).toBe("assistant");
+    expect(result.compactAll).toBe(true);
+    expect(result.firstKeptEntryId).toBe("");
+    expect(0).toBeLessThanOrEqual(MAX_SMART_TAIL_TOKENS * OVERSIZED_TAIL_FACTOR);
   });
 
-  test("Case B tolerance: last turn ~37.5k tok → no budget cut", () => {
+  test("Case B tolerance: an anchored tail below the factor cap stays unchanged", () => {
     const entries = [
       msg("u1", "user", "one"),
       msg("a1", "assistant", "reply"),
@@ -645,14 +687,15 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     ];
     const cut = buildOwnCut(entries, 1);
     if (!cut.ok) return;
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
-    expect(result).toBe(cut); // tolerance zone: unchanged
+    const result = applyTailBudget(entries, cut, { charsPerToken: 4, maxTokens: 35_000 });
+    expect(result).toBe(cut); // 37.5k tail is under the 42k factor cap
     if (!result.ok) return;
     expect(result.budgetCut).toBeUndefined();
     expect(result.firstKeptEntryId).toBe("u2");
+    expect(37_500).toBeLessThanOrEqual(35_000 * OVERSIZED_TAIL_FACTOR);
   });
 
-  test("toolResult snap: crossing lands on a toolResult → snapped forward to next non-toolResult", () => {
+  test("toolResult snap: no unpaired toolResult is retained in a no-anchor tail", () => {
     const entries = [
       msg("u1", "user", "go"),
       msg("a1", "assistant", "tool"),
@@ -664,10 +707,9 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     expect(cut.compactAll).toBe(true);
     const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
     if (!result.ok) return;
-    expect(result.budgetCut).toBe("no_anchor");
-    expect(result.firstKeptEntryId).toBe("a2"); // snapped past the toolResult
-    const keptFirst = entries.find((e: any) => e.id === result.firstKeptEntryId)!;
-    expect(keptFirst.message.role).toBe("assistant");
+    expect(result.budgetCut).toBe("no_anchor_textonly");
+    expect(result.firstKeptEntryId).toBe("");
+    expect(result.compactAll).toBe(true);
   });
 
   test("formatCompactionStats leads with tail tokens for budget cuts", () => {
@@ -695,23 +737,71 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
   });
 
-  test("Case A default path: no_anchor budget cut keeps a tail and sets stats", () => {
+  test("real short-compaction replay bounds the kept in-flight tool pair", () => {
+    const replay = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/short-compaction-replay.json"), "utf8"));
+    expect(replay.sourceMessageCount).toBe(2);
+    expect(replay.tokensBefore).toBe(156_671);
+    const entries = [
+      {
+        id: replay.sourceMessages[0].id,
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "call-source", name: "bash", arguments: { command: "git status" } }] },
+      },
+      { id: replay.sourceMessages[1].id, type: "message", message: { role: "toolResult", toolCallId: "call-source", content: "clean" } },
+      {
+        id: replay.keptPair[0].id,
+        type: "message",
+        message: { role: "assistant", content: [{ type: "toolCall", id: "call-kept", name: "bash", arguments: { command: "x".repeat(102_000) } }] },
+      },
+      { id: replay.keptPair[1].id, type: "message", message: { role: "toolResult", toolCallId: "call-kept", content: "r".repeat(1_000) } },
+    ];
+    const cut = buildOwnCut(entries as any, 1);
+    expect(cut.ok).toBe(true);
+    if (!cut.ok) return;
+    const result = applyTailBudget(entries as any, cut, { charsPerToken: 4 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.messages).toHaveLength(2);
+    expect(result.firstKeptEntryId).toBe(replay.keptPair[0].id);
+    expect(result.budgetCut).toBe("no_anchor_inflight");
+  });
+
+  test("short threshold compaction is canceled and its count is persisted", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, appendedEntries } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    const event = makeEvent(entries, undefined, { reason: "threshold", willRetry: false });
+    event.preparation.tokensBefore = 156_671;
+    expect(invokeBefore(event)).toEqual({ cancel: true });
+    expect(appendedEntries).toHaveLength(1);
+    expect(appendedEntries[0].customType).toBe("pi-vcc-compaction-skipped");
+    expect(appendedEntries[0].data).toMatchObject({
+      reason: "source_message_floor",
+      sourceMessageCount: 2,
+      minimumSourceMessageCount: 10,
+      tokensBefore: 156_671,
+    });
+  });
+
+  test("Case A text-only no-anchor path compacts all and records its budget path", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = [
       msg("u1", "user", "go"),
-      msg("a1", "assistant", "tool"),
-      msg("t1", "toolResult", "res"),
+      ...Array.from({ length: 9 }, (_, i) => msg(`a${i}`, "assistant", "work")),
       msg("a2", "assistant", "x".repeat(200_000)),
     ];
     const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
     expect(result.cancel).toBeUndefined();
-    expect(result.compaction.firstKeptEntryId).not.toBe("");
-    expect(getLastCompactionStats()!.budgetCut).toBe("no_anchor");
+    expect(result.compaction.firstKeptEntryId).toBe("");
+    expect(result.compaction.details.budgetCut).toBe("no_anchor_textonly");
+    expect(result.compaction.details.keptTokensEst).toBe(0);
+    expect(result.compaction.details.sourceMessageCount).toBeGreaterThanOrEqual(10);
   });
 
-  test("Case A small window: unchanged compact-all fallback and no budgetCut", () => {
+  test("Case A small explicit keep:0 remains compact-all", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
@@ -721,12 +811,12 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       msg("t1", "toolResult", "res"),
       msg("a2", "assistant", "done"),
     ];
-    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
+    const result = invokeBefore(makeEvent(entries, `${PI_VCC_COMPACT_INSTRUCTION} keep:0`));
     expect(result.compaction.firstKeptEntryId).toBe("");
     expect(getLastCompactionStats()!.budgetCut).toBeUndefined();
   });
 
-  test("Explicit keep:N with giant last turn is untouched (no budgetCut)", () => {
+  test("Explicit keep:N is bounded by the same tail budget", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
@@ -739,8 +829,9 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       msg("a3", "assistant", "reply three"),
     ];
     const result = invokeBefore(makeEvent(entries, `${PI_VCC_COMPACT_INSTRUCTION} keep:2`));
-    expect(result.compaction.firstKeptEntryId).toBe("u2");
-    expect(getLastCompactionStats()!.budgetCut).toBeUndefined();
+    expect(result.compaction.firstKeptEntryId).toBe("u3");
+    expect(getLastCompactionStats()!.budgetCut).toBe("explicit_keep");
+    expect(getLastCompactionStats()!.keptTokensEst).toBeLessThanOrEqual(MAX_SMART_TAIL_TOKENS * OVERSIZED_TAIL_FACTOR);
     expect(getLastCompactionStats()!.keepUserTurnsExplicit).toBe(true);
   });
 });
@@ -813,10 +904,9 @@ describe("collectLiveMessages: custom_message / branch_summary entries", () => {
     const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.budgetCut).toBe("no_anchor");
-    expect(result.firstKeptEntryId).toBe("c1"); // cut landed on the custom message
-    const keptFirst = entries.find((e: any) => e.id === result.firstKeptEntryId)!;
-    expect(keptFirst.type).toBe("custom_message");
+    expect(result.budgetCut).toBe("no_anchor_textonly");
+    expect(result.compactAll).toBe(true);
+    expect(result.firstKeptEntryId).toBe("");
   });
 
   test("orphan-recovery window containing custom_message keeps it in the live window", () => {

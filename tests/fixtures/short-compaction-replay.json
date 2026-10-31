@@ -1,0 +1,16 @@
+{
+  "sessionId": "01a182c7-35cd-7bf5-b3f2-bc7198543e21",
+  "compactionEntryId": "60498ffe",
+  "tokensBefore": 156671,
+  "sourceMessageCount": 2,
+  "firstKeptEntryId": "4370b437",
+  "sourceMessages": [
+    { "id": "eeacd8e9", "role": "assistant", "kind": "toolCall" },
+    { "id": "c75b99ef", "role": "toolResult", "kind": "result" }
+  ],
+  "keptPair": [
+    { "id": "4370b437", "role": "assistant", "kind": "toolCall" },
+    { "id": "da103d95", "role": "toolResult", "kind": "result" }
+  ],
+  "note": "IDs and counts from a real 2026-10-31 compaction; payloads are redacted. The test synthesizes only enough tool payload to replay the recorded short-source boundary without embedding session text."
+}
