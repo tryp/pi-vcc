@@ -1,12 +1,23 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { buildCompactReport } from "../src/core/report";
-import { prepareSessionSamples, readSourceStat, type SessionSample } from "./support/real-sessions";
+import {
+  cleanupCreatedSessionSampleDirectories,
+  prepareSessionSamples,
+  printSessionSampleGcSummary,
+  readSourceStat,
+  type SessionSample,
+} from "./support/real-sessions";
 import { loadSessionMessages } from "./support/load-session";
 
 let samples: SessionSample[] = [];
 
 beforeAll(async () => {
   samples = await prepareSessionSamples(2);
+});
+
+afterAll(async () => {
+  await cleanupCreatedSessionSampleDirectories();
+  printSessionSampleGcSummary();
 });
 
 describe("real session integration", () => {
