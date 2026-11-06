@@ -19,8 +19,10 @@ afterAll(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// Minimal ExtensionAPI stub: capture handler + provide ctx with mocked ui.notify
-function createMockPi() {
+// Minimal ExtensionAPI stub: capture handler + provide ctx with mocked ui.notify.
+// `failAppendFor` makes appendEntry throw for one custom type, so the diagnostic
+// retry path can be exercised.
+function createMockPi(failAppendFor?: string) {
   let beforeHandler: ((event: any, ctx: any) => any) | undefined;
   let compactHandler: ((event: any, ctx: any) => any) | undefined;
   let beforeAgentStartHandler: ((event: any, ctx: any) => any) | undefined;
@@ -50,6 +52,9 @@ function createMockPi() {
         customMessages.push({ message, options });
       },
       appendEntry: (customType: string, data: any) => {
+        if (failAppendFor && customType === failAppendFor) {
+          throw new Error("appendEntry failed: session store unavailable");
+        }
         appendedEntries.push({ customType, data });
       },
     } as any,
@@ -1198,5 +1203,42 @@ describe("registerBeforeCompactHook: custom_message reaches the summarizer", () 
     const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
     expect(result.cancel).toBeUndefined();
     expect(result.compaction.summary).toContain("BRANCH_MARKER_4242");
+  });
+});
+
+describe("registerBeforeCompactHook: diagnostic write failures", () => {
+  afterEach(() => {
+    if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
+  });
+
+  test("a failed limits append is retried as a minimal -failed entry instead of vanishing", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, appendedEntries } = createMockPi("pi-vcc-compaction-limits");
+    registerBeforeCompactHook(pi);
+    const entries = [...olderContext(), msg("u1", "user"), msg("a1", "assistant")];
+    invokeBefore(
+      makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION, {
+        reason: "threshold",
+        willRetry: false,
+        effectiveContextWindow: 272_000,
+        effectiveBudget: 272_000,
+        firstCostTierBoundary: null,
+        triggerTokens: 239_360,
+        triggerFraction: 0.88,
+        reserveTokens: 16_384,
+        windowSource: "backend",
+      }),
+    );
+    expect(appendedEntries.find((e) => e.customType === "pi-vcc-compaction-limits")).toBeUndefined();
+    const failed = appendedEntries.find((e) => e.customType === "pi-vcc-compaction-limits-failed");
+    expect(failed?.data).toMatchObject({
+      limitsFromHost: true,
+      hostLimitsReason: null,
+      effectiveBudget: 272_000,
+      error: "appendEntry failed: session store unavailable",
+    });
+    // The retry carries the budget that was actually used, so the analysis can still
+    // attribute the compaction even when the full payload could not be written.
+    expect(typeof failed?.data.tailBudgetUsed).toBe("number");
   });
 });

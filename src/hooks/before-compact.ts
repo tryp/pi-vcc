@@ -88,6 +88,36 @@ const scheduleAutoContinue = (pi: any) => {
 
 export const getLastCompactionStats = () => lastStats;
 
+/**
+ * Append an analysis diagnostic, retrying once with a minimal payload if the full
+ * write throws.
+ *
+ * These entries are the only durable record that a compaction used host limits, or
+ * that it was skipped. Swallowing the failure made a compaction that fell back to
+ * legacy budgets indistinguishable from one that never ran, so the analysis counted
+ * a lost diagnostic as "no compaction happened".
+ */
+const appendDiagnostic = (
+  pi: any,
+  customType: string,
+  payload: Record<string, unknown>,
+  minimal: Record<string, unknown>,
+): void => {
+  try {
+    pi.appendEntry(customType, payload);
+    return;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      pi.appendEntry(`${customType}-failed`, { ...minimal, error: message });
+      return;
+    } catch {}
+    // Both writes failed, so nothing can be persisted. Leave a trace where an operator
+    // will see it: the failure is now visible instead of invisible.
+    console.error(`[pi-vcc] could not record ${customType} diagnostic: ${message}`);
+  }
+};
+
 const formatTokens = (n: number): string => {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
@@ -674,8 +704,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // Record the exact host limits and VCC budgets used. Old hosts omit these
     // fields; that path preserves the legacy absolute tail budget and is explicit
     // in the diagnostic rather than guessing a model window.
-    try {
-      pi.appendEntry("pi-vcc-compaction-limits", {
+    appendDiagnostic(
+      pi,
+      "pi-vcc-compaction-limits",
+      {
         effectiveContextWindow: resolvedLimits.limits?.effectiveContextWindow ?? null,
         effectiveBudget,
         firstCostTierBoundary: resolvedLimits.limits?.firstCostTierBoundary ?? null,
@@ -696,8 +728,15 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         capSource: resolvedLimits.capSource,
         capMetadataInvalid: resolvedLimits.capMetadataInvalid,
         limitsFromHost: resolvedLimits.fromHost,
-      });
-    } catch {}
+      },
+      {
+        limitsFromHost: resolvedLimits.fromHost,
+        hostLimitsReason: resolvedLimits.reason,
+        hostLimitsFailedKey: resolvedLimits.failedKey,
+        effectiveBudget,
+        tailBudgetUsed,
+      },
+    );
 
     const liveMessages = collectLiveMessages(branchEntries as any[]);
     const lastLiveAssistant = [...liveMessages].reverse().find((entry) => entry.message.role === "assistant");
@@ -786,7 +825,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         limitsFromHost: resolvedLimits.fromHost,
         compactionReason: reason,
       };
-      try { pi.appendEntry("pi-vcc-compaction-skipped", skipped); } catch {}
+      appendDiagnostic(pi, "pi-vcc-compaction-skipped", skipped, {
+        reason: skipped.reason,
+        sourceMessageCount: skipped.sourceMessageCount,
+        limitsFromHost: resolvedLimits.fromHost,
+        hostLimitsReason: resolvedLimits.reason,
+      });
       try { ctx?.ui?.notify?.(`pi-vcc: skipped compaction (${skipped.sourceMessageCount} source messages; minimum ${MIN_COMPACTION_SOURCE_MESSAGES}).`, "info"); } catch {}
       dbg(settings, { skippedCompaction: skipped });
       pendingFollowUpPrompt = null;
