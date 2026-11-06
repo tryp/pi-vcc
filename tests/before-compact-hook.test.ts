@@ -814,16 +814,63 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     const { pi, invokeBefore, appendedEntries } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
-    const event = makeEvent(entries, undefined, { reason: "threshold", willRetry: false });
+    const event = makeEvent(entries, undefined, {
+      reason: "threshold",
+      willRetry: false,
+      effectiveContextWindow: 272_000,
+      effectiveBudget: 272_000,
+      firstCostTierBoundary: 272_000,
+      triggerTokens: 150_000,
+      triggerFraction: 0.55,
+      reserveTokens: 16_000,
+      windowSource: "backend",
+    });
     event.preparation.tokensBefore = 156_671;
     expect(invokeBefore(event)).toEqual({ cancel: true });
-    expect(appendedEntries).toHaveLength(1);
-    expect(appendedEntries[0].customType).toBe("pi-vcc-compaction-skipped");
-    expect(appendedEntries[0].data).toMatchObject({
+    const skipped = appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-skipped");
+    const limits = appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-limits");
+    expect(skipped?.data).toMatchObject({
       reason: "source_message_floor",
       sourceMessageCount: 2,
       minimumSourceMessageCount: 10,
       tokensBefore: 156_671,
+      triggerHeadroom: -6_671,
+      limitsFromHost: true,
+    });
+    expect(limits?.data).toMatchObject({
+      effectiveBudget: 272_000,
+      triggerTokens: 150_000,
+      tailBudgetUsed: MAX_SMART_TAIL_TOKENS,
+      tailBudgetFraction: 0.15,
+      limitsFromHost: true,
+    });
+  });
+
+  test("host-provided tier-clamped limits are recorded and used without re-derivation", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, appendedEntries } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [...olderContext(), msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    const event = makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION, {
+      effectiveContextWindow: 500_000,
+      effectiveBudget: 272_000,
+      firstCostTierBoundary: 272_000,
+      triggerTokens: 239_360,
+      triggerFraction: 0.88,
+      reserveTokens: 16_000,
+      windowSource: "backend",
+    });
+    const result = invokeBefore(event);
+    expect(result.compaction).toBeDefined();
+    expect(appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-limits")?.data).toMatchObject({
+      effectiveContextWindow: 500_000,
+      effectiveBudget: 272_000,
+      firstCostTierBoundary: 272_000,
+      triggerTokens: 239_360,
+      windowSource: "backend",
+      tailBudgetUsed: MAX_SMART_TAIL_TOKENS,
+      tailBudgetFraction: 0.15,
+      limitsFromHost: true,
     });
   });
 

@@ -28,6 +28,10 @@ export interface PiVccSettings {
    * is always respected and never adjusted.
    */
   smartKeepTail: boolean;
+  /** Maximum fraction of the host-provided compaction budget to retain as tail.
+   * The existing 25k-token absolute tail limit remains a hard ceiling. Ignored
+   * when the host does not provide resolved context limits. */
+  tailBudgetFraction: number;
   /**
    * When true (default), pi-vcc asks the agent to continue after a successful
    * automatic compaction (threshold, or overflow after the assistant already
@@ -45,6 +49,7 @@ export interface PiVccSettings {
 export const DEFAULT_SETTINGS: PiVccSettings = {
   overrideDefaultCompaction: true,
   smartKeepTail: true,
+  tailBudgetFraction: 0.15,
   continueAfterThresholdCompact: true,
   continueAfterManualCompactionOnError: true,
   debug: false,
@@ -61,7 +66,13 @@ const readJson = (path: string): Record<string, unknown> | null => {
 export function loadSettings(): PiVccSettings {
   const parsed = readJson(settingsPath());
   if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
+  const settings = { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
+  const fraction = parsed.tailBudgetFraction;
+  settings.tailBudgetFraction =
+    typeof fraction === "number" && Number.isFinite(fraction) && fraction > 0 && fraction <= 1
+      ? fraction
+      : DEFAULT_SETTINGS.tailBudgetFraction;
+  return settings;
 }
 
 /**

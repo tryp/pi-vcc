@@ -4,6 +4,7 @@ import { compileRanked } from "../core/summarize";
 import type { NormalizableMessage } from "../core/normalize";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
+import { readHostCompactionLimits, resolveSummaryBudgets, resolveTailBudget } from "../core/compaction-limits";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
 import type { PiVccCompactionDetails } from "../details";
 import type { CompactionReason, FileOps } from "../types";
@@ -642,12 +643,40 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const { preparation, branchEntries, customInstructions } = event;
     const { reason, willRetry } = readCompactionEventContext(event);
     const settings = loadSettings();
+    const resolvedLimits = readHostCompactionLimits(event);
+    const effectiveBudget = resolvedLimits.limits?.effectiveBudget ?? null;
+    const summaryBudgets = resolveSummaryBudgets(effectiveBudget);
+    const tailBudgetUsed = resolveTailBudget(
+      effectiveBudget,
+      settings.tailBudgetFraction,
+      MAX_SMART_TAIL_TOKENS,
+      OVERSIZED_TAIL_FACTOR,
+      summaryBudgets.ceilingTokens,
+    );
 
     // Always handle explicit /pi-vcc marker.
     // Otherwise, only handle when user opted in via settings.
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
     pendingFollowUpPrompt = null;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
+
+    // Record the exact host limits and VCC budgets used. Old hosts omit these
+    // fields; that path preserves the legacy absolute tail budget and is explicit
+    // in the diagnostic rather than guessing a model window.
+    try {
+      pi.appendEntry("pi-vcc-compaction-limits", {
+        effectiveContextWindow: resolvedLimits.limits?.effectiveContextWindow ?? null,
+        effectiveBudget,
+        firstCostTierBoundary: resolvedLimits.limits?.firstCostTierBoundary ?? null,
+        triggerTokens: resolvedLimits.limits?.triggerTokens ?? null,
+        triggerFraction: resolvedLimits.limits?.triggerFraction ?? null,
+        reserveTokens: resolvedLimits.limits?.reserveTokens ?? null,
+        windowSource: resolvedLimits.limits?.windowSource ?? "unavailable",
+        tailBudgetUsed,
+        tailBudgetFraction: settings.tailBudgetFraction,
+        limitsFromHost: resolvedLimits.fromHost,
+      });
+    } catch {}
 
     const liveMessages = collectLiveMessages(branchEntries as any[]);
     const lastLiveAssistant = [...liveMessages].reverse().find((entry) => entry.message.role === "assistant");
@@ -675,6 +704,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       requestedKeepUserTurns: keepUserTurnsExplicit ? keepUserTurns : null,
       explicit: keepUserTurnsExplicit,
       smartKeepTail: settings.smartKeepTail,
+      ...(resolvedLimits.fromHost ? { minTokens: Math.min(MIN_SMART_TAIL_TOKENS, Math.floor(tailBudgetUsed * 0.2)), maxTokens: tailBudgetUsed } : {}),
       charsPerToken: tokenEstimate.charsPerToken,
     });
     const fileOps: FileOps = {
@@ -688,17 +718,19 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       ownCut = applyTailBudget(branchEntries as any[], ownCut, {
         charsPerToken: tokenEstimate.charsPerToken,
         explicitKeep: keepUserTurnsExplicit,
+        ...(resolvedLimits.fromHost ? { maxTokens: tailBudgetUsed } : {}),
       });
     }
 
     // For threshold compactions, the measured 1–2 and 3–9 source-message
     // buckets together make up 47.4% of events. Don't pay for a summary and
     // prompt rewrite that covers fewer than 10 messages; cancellation lets the
-    // current turn finish. Pi core triggers threshold compaction at 90% of the
-    // context window and records _lastPreSendCompactionLength only after messages
-    // are replaced, so canceling leaves the next submit eligible to retry. As the
-    // window grows, the summarized prefix reaches 10 messages and the floor
-    // self-heals into fewer, larger compactions rather than livelocking. Recovery
+    // current turn finish. Pi core supplies the resolved triggerTokens for this
+    // model/request (including configured caps and price-tier limits) and records
+    // _lastPreSendCompactionLength only after messages are replaced, so canceling
+    // leaves the next submit eligible to retry. As the effective budget grows,
+    // the summarized prefix may reach 10 messages and the floor can self-heal into
+    // fewer, larger compactions rather than livelocking. Recovery
     // has two entry paths: post-response overflow arrives as reason="overflow",
     // while pre-send context-guard recovery arrives as reason="threshold" with
     // willRetry=true. Never apply the floor to either recovery path: canceling the
@@ -722,6 +754,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         keptTokensEst: estimateTokensFromChars(skippedKeptChars, tokenEstimate.charsPerToken),
         budgetCut: ownCut.budgetCut,
         tokensBefore: preparation.tokensBefore,
+        triggerTokens: resolvedLimits.limits?.triggerTokens ?? null,
+        triggerHeadroom: resolvedLimits.limits ? resolvedLimits.limits.triggerTokens - preparation.tokensBefore : null,
+        limitsFromHost: resolvedLimits.fromHost,
         compactionReason: reason,
       };
       try { pi.appendEntry("pi-vcc-compaction-skipped", skipped); } catch {}
@@ -853,8 +888,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // Audit (research/audit, 794 sessions, vs shipped master 0.3.18): SMALL/MED
     // unchanged; LARGE bucket paired recall -5.0pp -> -2.3pp (median to parity),
     // long-tail losers 100/369 -> 67/369; fact density stays ~1.4x master.
-    const RANKED_BRIEF_BUDGET_TOKENS = 1100;
-    const RANKED_BRIEF_CEILING_TOKENS = 2000;
+    const RANKED_BRIEF_BUDGET_TOKENS = summaryBudgets.floorTokens;
+    const RANKED_BRIEF_CEILING_TOKENS = summaryBudgets.ceilingTokens;
     const RANKED_BRIEF_TOKENS_PER_BLOCK = 15;
     const summary = compileRanked({
       messages: agentMessages as NormalizableMessage[],
