@@ -6,6 +6,7 @@ export interface HostCompactionLimits {
   triggerTokens: number;
   triggerFraction: number;
   reserveTokens: number;
+  tailBudgetTokens: number | null;
   windowSource: "backend" | "static" | "stored" | "default";
 }
 
@@ -35,6 +36,7 @@ export function readHostCompactionLimits(event: unknown): ResolvedHostLimits {
     typeof value.reserveTokens !== "number" ||
     !Number.isFinite(value.reserveTokens) ||
     value.reserveTokens < 0 ||
+    !(value.tailBudgetTokens === undefined || value.tailBudgetTokens === null || finitePositive(value.tailBudgetTokens)) ||
     !(value.firstCostTierBoundary === null || finitePositive(value.firstCostTierBoundary)) ||
     !["backend", "static", "stored", "default"].includes(String(value.windowSource))
   ) {
@@ -49,35 +51,94 @@ export function readHostCompactionLimits(event: unknown): ResolvedHostLimits {
       triggerTokens: value.triggerTokens,
       triggerFraction: value.triggerFraction,
       reserveTokens: value.reserveTokens,
+      tailBudgetTokens: finitePositive(value.tailBudgetTokens) ? value.tailBudgetTokens : null,
       windowSource: value.windowSource as HostCompactionLimits["windowSource"],
     },
   };
 }
 
 /**
- * Resolve VCC's retained-tail target. The legacy absolute value remains a hard
- * ceiling; a fraction can only reduce it. Budget absent means exact old behavior.
+ * Resolve VCC's retained-tail target. With host limits, the configured fraction
+ * is primary and the minimum fraction is only a lower target. The legacy token
+ * value is used only without host limits. The oversize guard is the final safety
+ * clamp, bounding the retained tail and summary against the host budget.
  */
+export interface TailBudgetDecision {
+  tokens: number;
+  source: "host_absolute" | "settings_absolute" | "fraction" | "legacy_fallback";
+  safetyClamped: boolean;
+}
+
+export function resolveTailBudgetDecision(
+  effectiveBudget: number | null,
+  hostAbsoluteTokens: number | null,
+  settingsAbsoluteTokens: number | null,
+  fraction: number,
+  minFraction: number,
+  legacyTailTokens: number,
+  oversizedFactor: number,
+  summaryBudgetCeiling: number,
+): TailBudgetDecision {
+  const hasBudget = effectiveBudget !== null && finitePositive(effectiveBudget);
+  let target: number;
+  let source: TailBudgetDecision["source"];
+  if (finitePositive(hostAbsoluteTokens)) {
+    target = hostAbsoluteTokens;
+    source = "host_absolute";
+  } else if (finitePositive(settingsAbsoluteTokens)) {
+    target = settingsAbsoluteTokens;
+    source = "settings_absolute";
+  } else if (hasBudget) {
+    target = Math.max(Math.floor(effectiveBudget * minFraction), Math.floor(effectiveBudget * fraction));
+    source = "fraction";
+  } else {
+    target = legacyTailTokens;
+    source = "legacy_fallback";
+  }
+  if (!hasBudget) return { tokens: target, source, safetyClamped: false };
+  const maxTailPlusSummary = Math.max(0, effectiveBudget - Math.min(summaryBudgetCeiling, effectiveBudget));
+  const maxTokensBeforeOversize = Math.floor(maxTailPlusSummary / Math.max(1, oversizedFactor));
+  return {
+    tokens: Math.min(target, maxTokensBeforeOversize),
+    source,
+    safetyClamped: target > maxTokensBeforeOversize,
+  };
+}
+
 export function resolveTailBudget(
   effectiveBudget: number | null,
   fraction: number,
-  legacyMaxTokens: number,
+  minFraction: number,
+  legacyTailTokens: number,
   oversizedFactor: number,
   summaryBudgetCeiling: number,
 ): number {
-  if (effectiveBudget === null || !finitePositive(effectiveBudget)) return legacyMaxTokens;
-  const safeFraction = Number.isFinite(fraction) && fraction > 0 && fraction <= 1 ? fraction : 0.15;
-  const maxTailPlusSummary = Math.max(0, effectiveBudget - Math.min(summaryBudgetCeiling, effectiveBudget));
-  const maxTokensBeforeOversize = Math.floor(maxTailPlusSummary / Math.max(1, oversizedFactor));
-  return Math.max(0, Math.min(legacyMaxTokens, Math.floor(effectiveBudget * safeFraction), maxTokensBeforeOversize));
+  return resolveTailBudgetDecision(
+    effectiveBudget,
+    null,
+    null,
+    fraction,
+    minFraction,
+    legacyTailTokens,
+    oversizedFactor,
+    summaryBudgetCeiling,
+  ).tokens;
 }
 
-export function resolveSummaryBudgets(effectiveBudget: number | null): { floorTokens: number; ceilingTokens: number } {
-  if (effectiveBudget === null || !finitePositive(effectiveBudget)) {
-    return { floorTokens: 1100, ceilingTokens: 2000 };
-  }
-  return {
-    floorTokens: Math.max(0, Math.min(1100, Math.floor(effectiveBudget * 0.05))),
-    ceilingTokens: Math.max(0, Math.min(2000, Math.floor(effectiveBudget * 0.1))),
-  };
+/**
+ * Derive summary floor/ceiling from their configured fractions. The ceiling is
+ * also bounded by an absolute quality cap; small budgets naturally downgrade
+ * both targets, while a larger context window does not extend output past the cap.
+ */
+export function resolveSummaryBudgets(
+  effectiveBudget: number | null,
+  floorFraction: number,
+  ceilingFraction: number,
+  ceilingMaxTokens: number,
+  referenceBudgetTokens: number,
+): { floorTokens: number; ceilingTokens: number } {
+  const budget = effectiveBudget !== null && finitePositive(effectiveBudget) ? effectiveBudget : referenceBudgetTokens;
+  const ceilingTokens = Math.min(ceilingMaxTokens, Math.floor(budget * ceilingFraction));
+  const floorTokens = Math.min(ceilingTokens, Math.floor(budget * floorFraction));
+  return { floorTokens, ceilingTokens };
 }

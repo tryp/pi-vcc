@@ -840,14 +840,14 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     expect(limits?.data).toMatchObject({
       effectiveBudget: 272_000,
       triggerTokens: 150_000,
-      tailBudgetUsed: MAX_SMART_TAIL_TOKENS,
-      tailBudgetFraction: 0.15,
+      tailBudgetUsed: 40_000,
+      tailBudgetFraction: 25_000 / 170_000,
       limitsFromHost: true,
     });
   });
 
   test("host-provided tier-clamped limits are recorded and used without re-derivation", () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
+    setConfig({ debug: false, overrideDefaultCompaction: true, tailBudgetTokens: 30_000 });
     const { pi, invokeBefore, appendedEntries } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = [...olderContext(), msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
@@ -858,6 +858,7 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       triggerTokens: 239_360,
       triggerFraction: 0.88,
       reserveTokens: 16_000,
+      tailBudgetTokens: 45_000,
       windowSource: "backend",
     });
     const result = invokeBefore(event);
@@ -868,8 +869,11 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       firstCostTierBoundary: 272_000,
       triggerTokens: 239_360,
       windowSource: "backend",
-      tailBudgetUsed: MAX_SMART_TAIL_TOKENS,
-      tailBudgetFraction: 0.15,
+      tailBudgetUsed: 45_000,
+      tailBudgetFraction: 25_000 / 170_000,
+      tailBudgetSource: "host_absolute",
+      hostAbsoluteTailTokens: 45_000,
+      settingsAbsoluteTailTokens: 30_000,
       limitsFromHost: true,
     });
   });

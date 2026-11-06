@@ -3,8 +3,8 @@ import { writeFileSync } from "fs";
 import { compileRanked } from "../core/summarize";
 import type { NormalizableMessage } from "../core/normalize";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
-import { loadSettings, type PiVccSettings } from "../core/settings";
-import { readHostCompactionLimits, resolveSummaryBudgets, resolveTailBudget } from "../core/compaction-limits";
+import { DEFAULT_SETTINGS, loadSettings, type PiVccSettings } from "../core/settings";
+import { readHostCompactionLimits, resolveSummaryBudgets, resolveTailBudgetDecision } from "../core/compaction-limits";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
 import type { PiVccCompactionDetails } from "../details";
 import type { CompactionReason, FileOps } from "../types";
@@ -31,7 +31,7 @@ export interface CompactionStats {
 }
 
 export type BudgetCutKind = "no_anchor" | "no_anchor_inflight" | "no_anchor_textonly" | "no_anchor_idless" | "oversized_tail" | "explicit_keep";
-export const OVERSIZED_TAIL_FACTOR = 2.5;
+export const OVERSIZED_TAIL_FACTOR = DEFAULT_SETTINGS.oversizedTailFactor;
 /** The measured 1–2 and 3–9 source-message buckets together account for 47.4% of compactions. */
 export const MIN_COMPACTION_SOURCE_MESSAGES = 10;
 
@@ -535,8 +535,8 @@ export const applyTailBudget = (
 
 // ── smart keep-tail: boost default keep when tail is small ──
 
-export const MIN_SMART_TAIL_TOKENS = 5_000;
-export const MAX_SMART_TAIL_TOKENS = 25_000;
+export const MIN_SMART_TAIL_TOKENS = DEFAULT_SETTINGS.smartKeepTailLegacyMinTokens;
+export const MAX_SMART_TAIL_TOKENS = DEFAULT_SETTINGS.legacyTailTokens;
 
 export interface ResolveSmartKeepOptions {
   branchEntries: any[];
@@ -645,14 +645,24 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const settings = loadSettings();
     const resolvedLimits = readHostCompactionLimits(event);
     const effectiveBudget = resolvedLimits.limits?.effectiveBudget ?? null;
-    const summaryBudgets = resolveSummaryBudgets(effectiveBudget);
-    const tailBudgetUsed = resolveTailBudget(
+    const summaryBudgets = resolveSummaryBudgets(
       effectiveBudget,
+      settings.summaryFloorFraction,
+      settings.summaryCeilingFraction,
+      settings.summaryCeilingMaxTokens,
+      settings.summaryReferenceBudgetTokens,
+    );
+    const tailBudgetDecision = resolveTailBudgetDecision(
+      effectiveBudget,
+      resolvedLimits.limits?.tailBudgetTokens ?? null,
+      settings.tailBudgetTokens,
       settings.tailBudgetFraction,
-      MAX_SMART_TAIL_TOKENS,
-      OVERSIZED_TAIL_FACTOR,
+      settings.tailBudgetMinFraction,
+      settings.legacyTailTokens,
+      settings.oversizedTailFactor,
       summaryBudgets.ceilingTokens,
     );
+    const tailBudgetUsed = tailBudgetDecision.tokens;
 
     // Always handle explicit /pi-vcc marker.
     // Otherwise, only handle when user opted in via settings.
@@ -674,6 +684,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         windowSource: resolvedLimits.limits?.windowSource ?? "unavailable",
         tailBudgetUsed,
         tailBudgetFraction: settings.tailBudgetFraction,
+        tailBudgetSource: tailBudgetDecision.source,
+        tailBudgetSafetyClamped: tailBudgetDecision.safetyClamped,
+        hostAbsoluteTailTokens: resolvedLimits.limits?.tailBudgetTokens ?? null,
+        settingsAbsoluteTailTokens: settings.tailBudgetTokens,
         limitsFromHost: resolvedLimits.fromHost,
       });
     } catch {}
@@ -704,7 +718,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       requestedKeepUserTurns: keepUserTurnsExplicit ? keepUserTurns : null,
       explicit: keepUserTurnsExplicit,
       smartKeepTail: settings.smartKeepTail,
-      ...(resolvedLimits.fromHost ? { minTokens: Math.min(MIN_SMART_TAIL_TOKENS, Math.floor(tailBudgetUsed * 0.2)), maxTokens: tailBudgetUsed } : {}),
+      ...(resolvedLimits.fromHost ? { minTokens: Math.min(settings.smartKeepTailLegacyMinTokens, Math.floor(tailBudgetUsed * settings.smartKeepTailMinFraction)), maxTokens: tailBudgetUsed } : {}),
       charsPerToken: tokenEstimate.charsPerToken,
     });
     const fileOps: FileOps = {
@@ -718,7 +732,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       ownCut = applyTailBudget(branchEntries as any[], ownCut, {
         charsPerToken: tokenEstimate.charsPerToken,
         explicitKeep: keepUserTurnsExplicit,
-        ...(resolvedLimits.fromHost ? { maxTokens: tailBudgetUsed } : {}),
+        ...(resolvedLimits.fromHost ? { maxTokens: tailBudgetUsed, oversizedFactor: settings.oversizedTailFactor } : {}),
       });
     }
 
