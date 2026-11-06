@@ -835,6 +835,12 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       minimumSourceMessageCount: 10,
       tokensBefore: 156_671,
       triggerHeadroom: -6_671,
+      hostLimitsReason: null,
+      hostLimitsFailedKey: null,
+      capApplied: null,
+      capValue: null,
+      capSource: null,
+      capMetadataInvalid: false,
       limitsFromHost: true,
     });
     expect(limits?.data).toMatchObject({
@@ -843,6 +849,42 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       tailBudgetUsed: 40_000,
       tailBudgetFraction: 25_000 / 170_000,
       limitsFromHost: true,
+    });
+  });
+
+  test("invalid host limits are visible in both diagnostics and skipped-compaction entries", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, appendedEntries } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    const event = makeEvent(entries, undefined, {
+      reason: "threshold",
+      willRetry: false,
+      effectiveContextWindow: 272_000,
+      effectiveBudget: 0,
+      firstCostTierBoundary: 272_000,
+      triggerTokens: 150_000,
+      triggerFraction: 0.88,
+      reserveTokens: 16_000,
+      windowSource: "backend",
+      capApplied: "yes",
+    });
+    event.preparation.tokensBefore = 156_671;
+    expect(invokeBefore(event)).toEqual({ cancel: true });
+    const limits = appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-limits");
+    const skipped = appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-skipped");
+    expect(limits?.data).toMatchObject({
+      limitsFromHost: false,
+      hostLimitsReason: "invalid",
+      hostLimitsFailedKey: "effectiveBudget",
+      capApplied: null,
+      capMetadataInvalid: true,
+    });
+    expect(skipped?.data).toMatchObject({
+      hostLimitsReason: "invalid",
+      hostLimitsFailedKey: "effectiveBudget",
+      capApplied: null,
+      capMetadataInvalid: true,
     });
   });
 
@@ -859,6 +901,9 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       triggerFraction: 0.88,
       reserveTokens: 16_000,
       tailBudgetTokens: 45_000,
+      capApplied: true,
+      capValue: 170_000,
+      capSource: "absolute",
       windowSource: "backend",
     });
     const result = invokeBefore(event);
@@ -874,13 +919,19 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
       tailBudgetSource: "host_absolute",
       hostAbsoluteTailTokens: 45_000,
       settingsAbsoluteTailTokens: 30_000,
+      hostLimitsReason: null,
+      hostLimitsFailedKey: null,
+      capApplied: true,
+      capValue: 170_000,
+      capSource: "absolute",
+      capMetadataInvalid: false,
       limitsFromHost: true,
     });
   });
 
   test("pre-send context-guard recovery compacts despite a short source prefix", () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
-    const { pi, invokeBefore } = createMockPi();
+    const { pi, invokeBefore, appendedEntries } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
     const event = makeEvent(entries, undefined, { reason: "threshold", willRetry: true });
@@ -889,6 +940,12 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     expect(result.cancel).toBeUndefined();
     expect(result.compaction).toBeDefined();
     expect(result.compaction.details.reason).toBe("threshold");
+    expect(appendedEntries.find((entry) => entry.customType === "pi-vcc-compaction-limits")?.data).toMatchObject({
+      limitsFromHost: false,
+      hostLimitsReason: "absent",
+      hostLimitsFailedKey: null,
+      capApplied: null,
+    });
   });
 
   test("overflow compaction bypasses the source-message floor", () => {

@@ -654,6 +654,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     );
     const tailBudgetDecision = resolveTailBudgetDecision(
       effectiveBudget,
+      resolvedLimits.limits?.reserveTokens ?? null,
       resolvedLimits.limits?.tailBudgetTokens ?? null,
       settings.tailBudgetTokens,
       settings.tailBudgetFraction,
@@ -688,6 +689,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         tailBudgetSafetyClamped: tailBudgetDecision.safetyClamped,
         hostAbsoluteTailTokens: resolvedLimits.limits?.tailBudgetTokens ?? null,
         settingsAbsoluteTailTokens: settings.tailBudgetTokens,
+        hostLimitsReason: resolvedLimits.reason,
+        hostLimitsFailedKey: resolvedLimits.failedKey,
+        capApplied: resolvedLimits.capApplied,
+        capValue: resolvedLimits.capValue,
+        capSource: resolvedLimits.capSource,
+        capMetadataInvalid: resolvedLimits.capMetadataInvalid,
         limitsFromHost: resolvedLimits.fromHost,
       });
     } catch {}
@@ -770,6 +777,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         tokensBefore: preparation.tokensBefore,
         triggerTokens: resolvedLimits.limits?.triggerTokens ?? null,
         triggerHeadroom: resolvedLimits.limits ? resolvedLimits.limits.triggerTokens - preparation.tokensBefore : null,
+        hostLimitsReason: resolvedLimits.reason,
+        hostLimitsFailedKey: resolvedLimits.failedKey,
+        capApplied: resolvedLimits.capApplied,
+        capValue: resolvedLimits.capValue,
+        capSource: resolvedLimits.capSource,
+        capMetadataInvalid: resolvedLimits.capMetadataInvalid,
         limitsFromHost: resolvedLimits.fromHost,
         compactionReason: reason,
       };
