@@ -135,13 +135,28 @@ export const formatCompactionStats = (stats: CompactionStats): string => {
   return `pi-vcc: kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
 };
 
+const KNOWN_COMPACTION_REASONS: readonly CompactionReason[] = ["manual", "threshold", "overflow", "extension"];
+
+const isCompactionReason = (value: unknown): value is CompactionReason =>
+  typeof value === "string" && (KNOWN_COMPACTION_REASONS as readonly string[]).includes(value);
+
 const readCompactionEventContext = (event: unknown): { reason?: CompactionReason; willRetry: boolean } => {
   const raw = event as { reason?: unknown; willRetry?: unknown };
-  const reason = raw.reason === "manual" || raw.reason === "threshold" || raw.reason === "overflow"
-    ? raw.reason
-    : undefined;
+  // An unrecognised reason stays undefined on purpose: a future core reason must not
+  // be silently coerced into a known one. `details.reason` records the gap.
+  const reason = isCompactionReason(raw.reason) ? raw.reason : undefined;
   return { reason, willRetry: raw.willRetry === true };
 };
+
+/**
+ * Whether the compaction was requested by a caller (a user command, or an
+ * extension through `ctx.compact()`) rather than by one of pi's automatic
+ * recovery paths. Both caller-requested reasons behave the same way here: they
+ * are not subject to the source-message floor, and they can need the invisible
+ * auto-continue after a failed turn because nothing else resumes the agent.
+ */
+const isCallerRequestedCompaction = (reason: CompactionReason | undefined): boolean =>
+  reason === "manual" || reason === "extension";
 
 export const scheduleCompactionStatsNotify = (ctx: any, stats: CompactionStats) => {
   setTimeout(() => {
@@ -1040,8 +1055,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     if (!stats) return;
     const settings = loadSettings();
     const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && settings.continueAfterThresholdCompact;
-    const shouldContinueAfterManualError = reason === "manual" && lastCompactFollowedError && settings.continueAfterManualCompactionOnError;
-    const shouldContinue = shouldContinueAfterAutoCompact || shouldContinueAfterManualError;
+    // `extension` is caller-requested like `manual`: a compaction an extension asked
+    // for after an error leaves the turn dead with nothing scheduled to resume it,
+    // so it takes the same continue path. The setting keeps its historical name; the
+    // predicate above is what decides, not the absence of a match.
+    const shouldContinueAfterCallerCompaction = isCallerRequestedCompaction(reason) && lastCompactFollowedError && settings.continueAfterManualCompactionOnError;
+    const shouldContinue = shouldContinueAfterAutoCompact || shouldContinueAfterCallerCompaction;
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
       try {

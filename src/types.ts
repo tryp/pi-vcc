@@ -1,6 +1,17 @@
 import type { Message } from "@earendil-works/pi-ai";
 
-export type CompactionReason = "manual" | "threshold" | "overflow";
+/**
+ * Why a compaction ran.
+ *
+ * - `manual`: a user asked for it (`/compact`, `/pi-vcc`).
+ * - `threshold`: pi's own pre-send/after-turn threshold compaction.
+ * - `overflow`: pi's recovery after a context-overflow rejection.
+ * - `extension`: an extension asked for it through `ctx.compact()`, which pi core
+ *   reports distinctly from `manual`. Treat it as a caller-requested compaction:
+ *   it is a deliberate request, not one of the two automatic recovery paths, so
+ *   the source-message floor and the overflow fallback must not apply to it.
+ */
+export type CompactionReason = "manual" | "threshold" | "overflow" | "extension";
 
 export interface FileOps {
   readFiles?: string[];

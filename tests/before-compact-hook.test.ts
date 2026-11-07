@@ -336,6 +336,68 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(customMessages).toEqual([]);
   });
 
+  // pi core reports an extension-requested `ctx.compact()` with reason "extension".
+  // Dropping it to undefined lost the distinction in `details.reason` (telemetry)
+  // and silently removed the compaction from the manual-like continue path.
+  test("extension compaction records its reason instead of dropping it", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = Array.from({ length: 12 }, (_, i) => msg(`m${i}`, i % 2 === 0 ? "user" : "assistant", "work"));
+    const event = makeEvent(entries, undefined, { reason: "extension", willRetry: false });
+    event.preparation.tokensBefore = 156_671;
+    const result = invokeBefore(event);
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction.details.reason).toBe("extension");
+    expect(getLastCompactionStats()).toMatchObject({ reason: "extension", willRetry: false });
+  });
+
+  test("extension compaction bypasses the source-message floor", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    const result = invokeBefore(makeEvent(entries, undefined, { reason: "extension", willRetry: false }));
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction).toBeDefined();
+    expect(result.compaction.details.reason).toBe("extension");
+    expect(result.compaction.details.sourceMessageCount).toBeLessThan(MIN_COMPACTION_SOURCE_MESSAGES);
+  });
+
+  test("extension compaction auto-continues when the last assistant ended in error", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    entries[3].message.stopReason = "error";
+    invokeBefore(makeEvent(entries, undefined, { reason: "extension", willRetry: false }));
+    await invokeCompact({ type: "session_compact", fromExtension: true, reason: "extension", willRetry: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(customMessages).toHaveLength(1);
+    expect(customMessages[0].message).toMatchObject({ customType: "pi-vcc-auto-continue", display: false });
+  });
+
+  test("extension compaction does not continue without an error", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, invokeCompact, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    invokeBefore(makeEvent(entries, undefined, { reason: "extension", willRetry: false }));
+    await invokeCompact({ type: "session_compact", fromExtension: true, reason: "extension", willRetry: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(customMessages).toEqual([]);
+  });
+
+  test("an unknown compaction reason is not coerced into a known one", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = Array.from({ length: 12 }, (_, i) => msg(`m${i}`, i % 2 === 0 ? "user" : "assistant", "work"));
+    const result = invokeBefore(makeEvent(entries, undefined, { reason: "future-reason", willRetry: false }));
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction.details.reason).toBeUndefined();
+  });
+
   test("threshold compact continuation is canceled when a real user prompt starts", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore, invokeCompact, invokeBeforeAgentStart, customMessages } = createMockPi();
